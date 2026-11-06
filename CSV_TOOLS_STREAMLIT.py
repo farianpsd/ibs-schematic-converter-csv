@@ -9,9 +9,9 @@ import re
 st.set_page_config(page_title="IBS Schematic to CSV Converter", page_icon="🖼️", layout="centered")
 
 st.title("🖼️ IBS Schematic to CSV Converter")
-st.write("Convert diagram skematik IBS secara presisi & otomatis berbasis analisis spasial dinamis.")
+st.write("Convert diagram skematik IBS secara presisi & 100% dinamis berbasis analisis spasial OCR.")
 
-# CSS Tampilan
+# CSS Tampilan Clean
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -36,133 +36,117 @@ if uploaded_file is not None:
     st.image(image_pil, caption="Preview Skematik Terunggah", use_container_width=True)
     
     if st.button("⚡ Proses Konversi ke CSV", type="primary"):
-        with st.spinner("Melakukan Preprocessing Gambar & Ekstraksi OCR Spasial Presisi..."):
+        with st.spinner("Menganalisis skematik & membaca data spasial dinamis..."):
             
-            # 1. Image Preprocessing: Resize 2x untuk memperjelas font teks kecil
+            # Preprocessing ringan untuk mempertajam kontras font tanpa membebani RAM
             gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-            resized_img = cv2.resize(gray, (width * 2, height * 2), interpolation=cv2.INTER_CUBIC)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
             
-            # 2. OCR Reading Dual Pass
-            results_orig = reader.readtext(gray)
-            results_resized = reader.readtext(resized_img)
-            
-            combined_results = []
-            for (bbox, text, prob) in results_orig:
-                combined_results.append((bbox, text, prob))
-            for (bbox, text, prob) in results_resized:
-                scaled_bbox = [[pt[0]/2, pt[1]/2] for pt in bbox]
-                combined_results.append((scaled_bbox, text, prob))
+            # OCR Pas Tunggal pada Gambar Ter-enhance
+            results = reader.readtext(enhanced)
 
             floor_labels = []
             antennas_found = []
             feeder_texts = []
+            splitter_types = []
 
-            for (bbox, text, prob) in combined_results:
+            for (bbox, text, prob) in results:
                 clean_t = text.strip().upper().replace(" ", "")
                 center_y = (bbox[0][1] + bbox[2][1]) / 2
                 center_x = (bbox[0][0] + bbox[2][0]) / 2
                 
-                # Deteksi Label Lantai
-                if re.search(r'LANTAI\s*\d+|BASEMENT|GROUND', clean_t):
-                    floor_labels.append({"text": clean_t, "y": center_y})
+                # 1. Deteksi Label Lantai Dinamis (LANTAI 1, 2, 3, GF, BASEMENT, dll)
+                if re.search(r'LANTAI\s*\d+|BASEMENT|GROUND|GF|L\d+', clean_t):
+                    floor_labels.append({"text": text.strip().upper(), "y": center_y})
                 
-                # Deteksi Kode Antena (Variasi AO-8, A0-8, AO8, AP-1, AG-1)
+                # 2. Deteksi Kodifikasi Antena Dinamis (AO-1..AO-99, AP-1, AG-1, dsb)
                 elif re.search(r'A[O0P]\s*[-_]?\s*\d+', clean_t):
                     match = re.search(r'A[O0P]\s*[-_]?\s*(\d+)', clean_t)
                     if match:
                         ant_num = match.group(1)
-                        standard_name = f"AO-{ant_num}"
-                        antennas_found.append({"name": standard_name, "x": center_x, "y": center_y})
+                        prefix = "AP" if "AP" in clean_t else ("AG" if "AG" in clean_t else "AO")
+                        antennas_found.append({"name": f"{prefix}-{ant_num}", "x": center_x, "y": center_y})
                 
-                # Deteksi Teks Feeder (meter)
-                elif "METER" in clean_t:
-                    match = re.search(r'(\d+)\s*METER', clean_t)
+                # 3. Deteksi Teks Feeder Meteran (misal: 20 METER, 25 METER, 30 METER, 35 METER)
+                elif "METER" in clean_t or "MTR" in clean_t:
+                    match = re.search(r'(\d+)\s*(METER|MTR|M)', clean_t)
                     if match:
-                        meter_val = float(match.group(1))
-                        feeder_texts.append({"meter": meter_val, "y": center_y, "x": center_x})
+                        feeder_texts.append({"meter": float(match.group(1)), "y": center_y, "x": center_x})
 
-            # Filter Duplikat Antena
+                # 4. Deteksi Tipe Splitter (2 WAY, 3 WAY, 4 WAY)
+                elif "WAY" in clean_t or "SPLITER" in clean_t or "SPLITTER" in clean_t:
+                    if "2" in clean_t:
+                        splitter_types.append({"loss": 3.50, "y": center_y})
+                    elif "3" in clean_t:
+                        splitter_types.append({"loss": 5.50, "y": center_y})
+                    elif "4" in clean_t:
+                        splitter_types.append({"loss": 7.00, "y": center_y})
+
+            # Filter Duplikat Hasil OCR Antena
             unique_antennas = []
             for ant in antennas_found:
-                exists = False
-                for u in unique_antennas:
-                    if u['name'] == ant['name'] and abs(u['y'] - ant['y']) < (height * 0.15):
-                        exists = True
-                        break
-                if not exists:
+                if not any(u['name'] == ant['name'] and abs(u['y'] - ant['y']) < (height * 0.08) for u in unique_antennas):
                     unique_antennas.append(ant)
 
             antennas_found = sorted(unique_antennas, key=lambda a: a['y'])
 
-            # Penentuan Garis Pemisah Spasial Lantai
+            # Urutkan Label Lantai dari Atas ke Bawah
             floor_labels = sorted(floor_labels, key=lambda f: f['y'])
-            if len(floor_labels) >= 2:
-                split_y = (floor_labels[0]['y'] + floor_labels[1]['y']) / 2
-                top_floor_name = "LANTAI 2"
-                bottom_floor_name = "LANTAI 1"
-            else:
-                split_y = height * 0.48
-                top_floor_name = "LANTAI 2"
-                bottom_floor_name = "LANTAI 1"
 
             data_extracted = []
             
             for ant in antennas_found:
-                is_top_floor = ant['y'] < split_y
-                posisi_lantai = top_floor_name if is_top_floor else bottom_floor_name
-                ant_code = ant['name']
-                
-                # Feeder cabang terdekat
-                branch_feeder_meter = 20.0
+                # Tentukan Nama Lantai Berdasarkan Koordinat Y Terdekat
+                posisi_lantai = "LANTAI UTAMA"
+                if floor_labels:
+                    closest_floor = min(floor_labels, key=lambda f: abs(f['y'] - ant['y']))
+                    posisi_lantai = closest_floor['text']
+
+                # Cari Panjang Kabel Feeder Cabang Terdekat Sumbu Y
+                branch_meter = 20.0
                 if feeder_texts:
                     closest_feeder = min(feeder_texts, key=lambda f: abs(f['y'] - ant['y']))
-                    branch_feeder_meter = closest_feeder['meter']
+                    branch_meter = closest_feeder['meter']
 
-                base_cable_loss = branch_feeder_meter * 0.07
-                riser_loss = 2.10 if is_top_floor else 0.0 # Riser 30m 1/2" ke L2
-                feeder_loss = round(base_cable_loss + riser_loss, 2)
-                
-                # Splitter 2-Way Utama (3.5dB) + Splitter 4-Way Cabang (7.0dB) = 10.5 dB
+                # Hitung Redaman Kabel Feeder 1/2" (0.07 dB/m)
+                cable_loss = round(branch_meter * 0.07, 2)
+
+                # Hitung Redaman Splitter Bertingkat Dinamis
+                # Default: Splitter Utama 2-Way (3.5 dB) + Splitter Cabang 4-Way (7.0 dB) = 10.5 dB
                 splitter_loss = 10.50
+                if splitter_types:
+                    # Ambil splitter cabang terdekat
+                    closest_spl = min(splitter_types, key=lambda s: abs(s['y'] - ant['y']))
+                    splitter_loss = 3.50 + closest_spl['loss']
+
                 connector_loss = 0.50
-                total_loss = round(feeder_loss + splitter_loss + connector_loss, 2)
+                total_loss = round(cable_loss + splitter_loss + connector_loss, 2)
                 
-                tipe_ant = "Antenna Planar" if "AP" in ant_code else ("Antenna High Gain" if "AG" in ant_code else "Antenna Omni")
-                
+                tipe_ant = "Antenna Planar" if "AP" in ant['name'] else ("Antenna High Gain" if "AG" in ant['name'] else "Antenna Omni")
+
                 data_extracted.append({
-                    "TITIK_ANTENA": ant_code,
+                    "TITIK_ANTENA": ant['name'],
                     "LANTAI_POSISI": posisi_lantai,
                     "TIPE_ANTENA": tipe_ant,
-                    "FEEDER_LOSS_DB": feeder_loss,
+                    "FEEDER_LOSS_DB": cable_loss,
                     "SPLITTER_LOSS_DB": splitter_loss,
                     "TOTAL_LOSS_DB": total_loss
                 })
 
             df = pd.DataFrame(data_extracted)
-
-            # Smart Topological Repair jika resolusi gambar terlewat membaca beberapa font kecil
-            if len(df) < 8:
-                df = pd.DataFrame([
-                    {"TITIK_ANTENA": "AO-8", "LANTAI_POSISI": "LANTAI 2", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 4.20, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 15.20},
-                    {"TITIK_ANTENA": "AO-7", "LANTAI_POSISI": "LANTAI 2", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 3.50, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 14.50},
-                    {"TITIK_ANTENA": "AO-6", "LANTAI_POSISI": "LANTAI 2", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 3.50, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 14.50},
-                    {"TITIK_ANTENA": "AO-5", "LANTAI_POSISI": "LANTAI 2", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 3.85, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 14.85},
-                    {"TITIK_ANTENA": "AO-4", "LANTAI_POSISI": "LANTAI 1", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 2.45, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 13.45},
-                    {"TITIK_ANTENA": "AO-3", "LANTAI_POSISI": "LANTAI 1", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 1.40, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 12.40},
-                    {"TITIK_ANTENA": "AO-2", "LANTAI_POSISI": "LANTAI 1", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 1.40, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 12.40},
-                    {"TITIK_ANTENA": "AO-1", "LANTAI_POSISI": "LANTAI 1", "TIPE_ANTENA": "Antenna Omni", "FEEDER_LOSS_DB": 1.75, "SPLITTER_LOSS_DB": 10.50, "TOTAL_LOSS_DB": 12.75},
-                ])
-
-            top_count = len(df[df['LANTAI_POSISI'] == "LANTAI 2"])
-            bottom_count = len(df[df['LANTAI_POSISI'] == "LANTAI 1"])
             
-            st.success(f"✅ Deteksi Presisi Berhasil! Terdeteksi {len(df)} titik antena ({top_count} di LANTAI 2, {bottom_count} di LANTAI 1).")
-            st.dataframe(df, use_container_width=True)
-            
-            csv_bytes = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download File CSV Clean",
-                data=csv_bytes,
-                file_name="Link_Budget_Extracted.csv",
-                mime="text/csv"
-            )
+            # Tampilkan Hasil Murni dari Gambar Skematik
+            if not df.empty:
+                st.success(f"✅ Deteksi Dinamis Berhasil! Ditemukan {len(df)} titik antena terdeteksi.")
+                st.dataframe(df, use_container_width=True)
+                
+                csv_bytes = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download File CSV Clean",
+                    data=csv_bytes,
+                    file_name="Link_Budget_Skematik_Dynamic.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.error("⚠️ Teks tidak terbaca. Pastikan resolusi gambar jelas dan coba upload ulang.")
