@@ -41,18 +41,20 @@ if uploaded_file is not None:
             # 1. Jalankan OCR dengan Output Bounding Box (Koordinat X, Y)
             results = reader.readtext(img_cv)
             
-            # 2. Deteksi Garis Pemisah Horizontal Hitam (Menggunakan OpenCV)
+            # 2. Deteksi Garis Pemisah Horizontal Hitam (Diperbarui agar Bebas Error TypeError)
             gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
             edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=200, minLineLength=width*0.3, maxLineGap=20)
+            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=200, minLineLength=int(width*0.3), maxLineGap=20)
             
             split_y = height / 2  # Default split tengah jika garis tidak terdeteksi
             if lines is not None:
                 horizontal_y = []
                 for line in lines:
-                    x1, y1, x2, y2 = line[0]
-                    if abs(y1 - y2) < 5:  # Garis horizontal
-                        horizontal_y.append(y1)
+                    coords = line.ravel()  # Mengarahkan array agar aman membaca koordinat 1D/2D
+                    if len(coords) == 4:
+                        x1, y1, x2, y2 = coords
+                        if abs(y1 - y2) < 10:  # Deteksi garis horizontal
+                            horizontal_y.append(y1)
                 if horizontal_y:
                     split_y = np.mean(horizontal_y)
 
@@ -98,7 +100,6 @@ if uploaded_file is not None:
                     feeder_loss = round(closest_feeder['meter'] * 0.07, 2)
                 
                 # Splitter Loss Standard (2-Way: 3.5dB, 3-Way: 5.5dB, 4-Way: 7.0dB)
-                # Secara bawaan skematik bercabang 4 (7.0 dB) / 2-Way (3.5 dB)
                 splitter_loss = 7.00 if "AO-4" in ant['text'] or "AO-5" in ant['text'] or "AO-6" in ant['text'] else 3.50
                 
                 total_loss = round(feeder_loss + splitter_loss + 0.50, 2)  # Tambah Connector Loss 0.5 dB
