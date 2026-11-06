@@ -37,7 +37,7 @@ def convert():
         height, width, _ = img.shape
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # Deteksi Warna Cyan/Biru Simbol Antenna Omni
+        # 1. Deteksi Warna Cyan/Biru Simbol Antenna Omni
         lower_cyan = np.array([80, 100, 100])
         upper_cyan = np.array([100, 255, 255])
         mask = cv2.inRange(hsv, lower_cyan, upper_cyan)
@@ -47,16 +47,16 @@ def convert():
         antennas = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if 50 < area < 3000: # Filter area lingkaran antenna
+            if 50 < area < 3000:
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
-                    # Pastikan posisi di sebelah kanan (area skematik antenna)
+                    # Filter area kanan (tempat simbol antena berada)
                     if cX > width * 0.5: 
                         antennas.append({"x": cX, "y": cY})
 
-        # Jika tidak terdeteksi via warna cyan, fallback ke OCR teks (jika ada teks AO-*)
+        # Fallback jika tidak terdeteksi cyan
         if not antennas:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             ocr_data = pytesseract.image_to_data(gray, config=r'--oem 3 --psm 6', output_type=pytesseract.Output.DATAFRAME)
@@ -66,30 +66,30 @@ def convert():
                 if re.search(r'A[O0P]\s*[-_]?\s*\d+', text):
                     antennas.append({"x": row['left'], "y": row['top']})
 
-        # Urutkan posisi antenna dari atas ke bawah
+        # Urutkan posisi antena dari atas ke bawah
         antennas = sorted(antennas, key=lambda a: a['y'])
 
-        # Cari posisi Teks LANTAI atau garis pembatas
+        # 2. Cari Teks LANTAI untuk Menentukan Garis Pembatas (split_y)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ocr_data = pytesseract.image_to_data(gray, config=r'--oem 3 --psm 6', output_type=pytesseract.Output.DATAFRAME)
         ocr_data = ocr_data[ocr_data.text.notnull()]
 
-        floors = []
+        y_lantai2 = None
         for idx, row in ocr_data.iterrows():
             text = str(row['text']).strip().upper()
-            if 'LANTAI' in text:
-                floors.append({"text": text, "y": row['top']})
+            if 'LANTAI' in text and '2' in text:
+                y_lantai2 = row['top']
+                break
 
-        floors = sorted(floors, key=lambda f: f['y'])
+        # Jika teks LANTAI 2 terdeteksi, garis pembatas berada tepat di bawah posisi Y teks tersebut
+        if y_lantai2 is not None:
+            split_y = y_lantai2 + 30
+        else:
+            # Batas toleransi presisi jika OCR teks tidak terbaca (sekitar pertengahan tinggi)
+            split_y = height * 0.53
 
-        split_y = height * 0.45
         top_floor = "LANTAI 2"
         bottom_floor = "LANTAI 1"
-
-        if len(floors) >= 2:
-            split_y = (floors[0]['y'] + floors[1]['y']) / 2
-            top_floor = floors[0]['text']
-            bottom_floor = floors[1]['text']
 
         extracted_rows = []
         total_antennas = len(antennas)
