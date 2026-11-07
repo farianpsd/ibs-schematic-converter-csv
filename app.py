@@ -7,7 +7,7 @@ import requests
 app = Flask(__name__)
 
 # Dapatkan API Key gratis dari https://console.groq.com/keys
-GROQ_API_KEY = "MASUKKAN_GROQ_API_KEY_ANDA_DI_SINI"
+GROQ_API_KEY = "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"
 
 @app.route('/')
 def index():
