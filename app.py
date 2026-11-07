@@ -6,8 +6,8 @@ import requests
 
 app = Flask(__name__)
 
-# Kunci API milik Anda
-GEMINI_API_KEY = "AQ.Ab8RN6JHKlBkdOTEs72j3Z5WZ-uiL2QZu-fdngR6NxaGhpdWBw"
+# Token AQ.Ab Anda
+GEMINI_API_KEY = "AQ.Ab8RN6JHK1BkdOTEs72j3Z5WZ-uiL2QZu-fdngR6NxaGhpdWBw"
 
 @app.route('/')
 def index():
@@ -57,9 +57,16 @@ def convert():
         ]
         """
 
-        # Endpoint REST API Gemini v1beta murni
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Endpoint tanpa key di URL
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         
+        # Header dual-authentication (Mendukung API Key biasa maupun Token AQ.Ab)
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {GEMINI_API_KEY}',
+            'x-goog-api-key': GEMINI_API_KEY
+        }
+
         payload = {
             "contents": [
                 {
@@ -79,7 +86,7 @@ def convert():
             }
         }
 
-        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=180)
+        response = requests.post(url, json=payload, headers=headers, timeout=180)
         res_json = response.json()
 
         if response.status_code != 200:
