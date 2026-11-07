@@ -7,7 +7,7 @@ from PIL import Image
 app = Flask(__name__)
 
 # Masukkan API Key (AQ.Ab...) milik Anda di sini
-GEMINI_API_KEY = "AQ.Ab8RN6Kfjlz0ZBVBhm7tM8wugZrb1suXP-ktqKASYtPWH_6o8A"
+GEMINI_API_KEY = "AQ.Ab8RN6JCVsxxkb4DAx9NwdgEg_FW5hlHx64MqbMk0bZn5aNG3w"
 
 genai.configure(api_key=GEMINI_API_KEY)
 
