@@ -6,7 +6,7 @@ import requests
 
 app = Flask(__name__)
 
-# Masukkan Groq API Key Anda
+# API Key Groq Anda
 GROQ_API_KEY = "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"
 
 @app.route('/')
@@ -27,42 +27,32 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
+        # Prompt meminta AI mengekstraksi angka mentah saja (fleksibel untuk skematik apapun)
         prompt = """
-        Kamu adalah sistem pakar analisis skematik IBS (In-Building System).
-        Analisis gambar skematik yang diberikan dan ekstraksi seluruh data antena distribusi dengan perhitungan presisi tinggi.
+        Kamu adalah sistem pakar OCR skematik IBS (In-Building System).
+        Analisis gambar skematik yang diberikan dan ekstrak data mentah untuk setiap titik antena.
 
         ATURAN EXCLUSION (ABAIKAN):
         - Abaikan Antenna Donor di sebelah kiri dan Feeder 7/8" 70 Meter menuju Antenna Donor.
         - Abaikan Title Block, Legenda REMARKS, Tabel Approval/Revisi di sisi paling kanan.
         
-        ALUR PENELUSURAN DARI OUTPUT REPEATER KE ANTENA:
-        1. Identifikasi LANTAI_POSISI dari setiap antena berdasarkan garis pembatas horizontal dan label lantai (LANTAI 1, LANTAI 2, dsb).
-        2. TIPE_ANTENA: Lingkaran Cyan/Biru = "Antenna Omni", Segitiga Cyan/Biru = "Antenna Planar".
-        3. Berikan TITIK_ANTENA berurutan dari paling bawah ke paling atas (misal AO-1 s/d AO-8).
-        
-        4. PERHITUNGAN FEEDER_LOSS_DB (SANGAT PENTING & KRUSIAL):
-           - Telusuri seluruh panjang kabel Feeder 1/2" dari Output Repeater hingga ke titik antena terkait.
-           - WAJIB JUMLAHKAN: Panjang Feeder Batang Utama (misal 25 Meter untuk Lantai 1 atau 30 Meter untuk Lantai 2) + Panjang Feeder Cabang Akhir ke Antena (misal 20m, 25m, 30m, 35m).
-           - Contoh Lantai 1: Feeder Utama (25m) + Cabang AO-4 (35m) = 60 Meter Total.
-           - FEEDER_LOSS_DB = Total Panjang Feeder (Meter) x 0.07 dB/m. Bulatkan ke 2 angka di belakang koma (misal: 60 x 0.07 = 4.2, 45 x 0.07 = 3.15).
+        INSTRUKSI EKSTRAKSI DATA MENTAH:
+        1. TITIK_ANTENA: Berikan penamaan berurutan dari lantai paling bawah ke paling atas (misal AO-1 s/d AO-8).
+        2. LANTAI_POSISI: Identifikasi nama lantai tempat antena dipasang (misal LANTAI 1, LANTAI 2).
+        3. TIPE_ANTENA: Lingkaran Cyan/Biru = "Antenna Omni", Segitiga Cyan/Biru = "Antenna Planar".
+        4. PANJANG_TRUNK_METER: Catat angka panjang kabel Feeder 1/2" batang/utama dari output Repeater ke Splitter di lantai tersebut (misal: 25 atau 30).
+        5. PANJANG_CABANG_METER: Catat angka panjang kabel Feeder 1/2" cabang dari Splitter lantai ke titik antena tersebut (misal: 20, 25, 30, 35).
+        6. SPLITTER_TYPES: Daftar jenis splitter yang dilewati jalur tersebut dari Repeater ke antena (misal: ["2-Way", "4-Way"]).
 
-        5. PERHITUNGAN SPLITTER_LOSS_DB:
-           - Hitung total loss komponen splitter yang dilewati pada jalur tersebut:
-             Splitter 2-Way = 3.5 dB, Splitter 3-Way = 6.0 dB, Splitter 4-Way = 7.0 dB.
-           - Jika melewati Splitter 2-Way dan Splitter 4-Way, SPLITTER_LOSS_DB = 3.5 + 7.0 = 10.5 dB.
-
-        6. PERHITUNGAN TOTAL_LOSS_DB:
-           - TOTAL_LOSS_DB = FEEDER_LOSS_DB + SPLITTER_LOSS_DB + 0.5 (margin fixed jumper & connector).
-
-        Kembalikan respon HANYA dalam format JSON array murni tanpa markdown/penjelasan tambahan dengan struktur seperti ini:
+        Kembalikan HANYA format JSON murni array of objects:
         [
           {
             "TITIK_ANTENA": "AO-1",
             "LANTAI_POSISI": "LANTAI 1",
             "TIPE_ANTENA": "Antenna Omni",
-            "FEEDER_LOSS_DB": 3.5,
-            "SPLITTER_LOSS_DB": 10.5,
-            "TOTAL_LOSS_DB": 14.5
+            "PANJANG_TRUNK_METER": 25,
+            "PANJANG_CABANG_METER": 25,
+            "SPLITTER_TYPES": ["2-Way", "4-Way"]
           }
         ]
         """
@@ -73,7 +63,7 @@ def convert():
             "Content-Type": "application/json"
         }
 
-        # Daftar model Vision aktif di Groq (dengan Fallback)
+        # Model Vision tetap dipertahankan sesuai permintaan
         VISION_MODELS = [
             "qwen/qwen3.8-27b"
         ]
@@ -116,17 +106,53 @@ def convert():
         raw_text = res_json['choices'][0]['message']['content']
         parsed_data = json.loads(raw_text)
         
-        # Ambil array jika JSON terbungkus objek utama
+        # Ekstrak array jika JSON dibungkus objek utama
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
                     parsed_data = parsed_data[key]
                     break
 
+        # LOGIKA KALKULASI MATEMATIS OTOMATIS OLEH PYTHON
+        final_results = []
+        for item in parsed_data:
+            trunk = float(item.get('PANJANG_TRUNK_METER', 0))
+            cabang = float(item.get('PANJANG_CABANG_METER', 0))
+            splitters = item.get('SPLITTER_TYPES', [])
+
+            # 1. Hitung Feeder Loss = (Trunk + Cabang) * 0.07 dB/m
+            total_panjang = trunk + cabang
+            feeder_loss = round(total_panjang * 0.07, 2)
+
+            # 2. Hitung Splitter Loss secara dinamis berdasarkan list splitter yang dilewati
+            splitter_loss = 0.0
+            for s in splitters:
+                s_str = str(s).lower()
+                if '2' in s_str:
+                    splitter_loss += 3.5
+                elif '3' in s_str:
+                    splitter_loss += 6.0
+                elif '4' in s_str:
+                    splitter_loss += 7.0
+
+            splitter_loss = round(splitter_loss, 2)
+
+            # 3. Total Loss = Feeder Loss + Splitter Loss + 0.5 (fixed margin connector/jumper)
+            total_loss = round(feeder_loss + splitter_loss + 0.5, 2)
+
+            final_results.append({
+                "TITIK_ANTENA": item.get("TITIK_ANTENA"),
+                "LANTAI_POSISI": item.get("LANTAI_POSISI"),
+                "TIPE_ANTENA": item.get("TIPE_ANTENA"),
+                "FEEDER_LOSS_DB": feeder_loss,
+                "SPLITTER_LOSS_DB": splitter_loss,
+                "TOTAL_LOSS_DB": total_loss
+            })
+
         return jsonify({
             'success': True,
-            'count': len(parsed_data) if isinstance(parsed_data, list) else 1,
-            'data': parsed_data
+            'count': len(final_results),
+            'data': final_results
         })
 
     except Exception as e:
