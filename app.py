@@ -27,29 +27,29 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
-        # Prompt Generik & Dinamis untuk Topologi Single & Multi-Stage Cascading
         prompt = """
-        Kamu adalah sistem pakar OCR & Spatial Analysis skematik IBS (In-Building System).
-        Analisis gambar skematik yang diberikan dan ekstrak data mentah untuk SELURUH titik antena tanpa ada yang terlewat.
+        Kamu adalah sistem OCR Skematik IBS (In-Building System) tingkat tinggi.
+        Tugas utama: Ekstrak SELURUH titik antena (simbol lingkaran/segitiga berwarna Cyan/Biru) TANPA ADA YANG TERLEWAT SATUPUN.
 
         ATURAN EXCLUSION (ABAIKAN):
-        - Abaikan Antenna Donor di sebelah kiri dan Feeder 7/8" 70 Meter menuju Antenna Donor.
+        - Abaikan Antenna Donor di sebelah kiri dan Feeder 7/8" 70 Meter.
         - Abaikan Title Block, Legenda REMARKS, Tabel Approval/Revisi di sisi paling kanan.
         
-        INSTRUKSI EKSTRAKSI DATA MENTAH (GENERIK & DINAMIS):
-        1. TITIK_ANTENA: Telusuri dan beri penamaan berurutan dari titik antena paling bawah ke paling atas pada diagram (AO-1, AO-2, dst.). Pastikan SEMUA simbol antena (lingkaran/segitiga cyan/biru) terdeteksi.
-        2. LANTAI_POSISI: Baca nama lantai dari label area teks terdekat (misal: LANTAI 1, LANTAI 2, BASEMENT, ROOFTOP, dsb.).
+        PETUNJUK DETEKSI ANTENA & JALUR (MANDATORI):
+        1. HITUNG SEMUA ANTENA: Pindai seluruh diagram dari atas ke bawah. Setiap lingkaran/segitiga Cyan/Biru adalah 1 titik antena. Urutkan penamaan titik dari paling bawah ke paling atas (AO-1, AO-2, AO-3, dst.).
+        2. LANTAI_POSISI: Ambil nama lantai dari garis pembatas horizontal (misal: LANTAI 1, LANTAI 2).
         3. TIPE_ANTENA: Lingkaran Cyan/Biru = "Antenna Omni", Segitiga Cyan/Biru = "Antenna Planar".
         
-        4. KABEL_FEEDER_METERS (DRAFT PENELUSURAN JALUR):
-           - Telusuri garis dari Output Repeater hingga ke titik antena terkait.
-           - Catat SEMUA angka panjang kabel Feeder 1/2" (dalam Meter) yang dilewati sepanjang garis jalur tersebut sebagai array angka.
-           - Contoh jika melewati kabel 20m, 15m, lalu 25m: [20, 15, 25].
+        4. KABEL_FEEDER_METERS:
+           - Telusuri garis dari Repeater hingga ke ujung antena tersebut.
+           - Catat SELURUH angka panjang kabel Feeder 1/2" (misal: 20, 15, 25) yang dilewati jalur tersebut dari Repeater ke antena dalam bentuk array angka.
+           
+        5. SPLITTER_TYPES:
+           - Catat SEMUA jenis pembagi sinyal yang dilewati dari Repeater ke antena tersebut.
+           - Perhatikan bentuk fisik dan teks label: Splitter 2-Way (pembagi 2 cabang), Splitter 3-Way (pembagi 3 cabang), Splitter 4-Way (pembagi 4 cabang).
+           - Masukkan ke array string (misal: ["2-Way", "2-Way", "3-Way"]).
 
-        5. SPLITTER_TYPES: 
-           - Catat SEMUA jenis splitter yang dilewati garis jalur dari Repeater ke titik antena tersebut dalam bentuk array string (misal: ["2-Way", "2-Way", "3-Way"] atau ["2-Way", "4-Way"]).
-
-        Kembalikan HANYA format JSON murni array of objects tanpa penjelasan tambahan:
+        Kembalikan HANYA format JSON murni array of objects:
         [
           {
             "TITIK_ANTENA": "AO-1",
@@ -67,7 +67,6 @@ def convert():
             "Content-Type": "application/json"
         }
 
-        # Model Vision tetap menggunakan qwen/qwen3.8-27b
         VISION_MODELS = [
             "qwen/qwen3.8-27b"
         ]
@@ -92,7 +91,7 @@ def convert():
                         ]
                     }
                 ],
-                "temperature": 0.1,
+                "temperature": 0.0,
                 "response_format": {"type": "json_object"}
             }
 
@@ -110,20 +109,19 @@ def convert():
         raw_text = res_json['choices'][0]['message']['content']
         parsed_data = json.loads(raw_text)
         
-        # Ekstrak array jika JSON dibungkus oleh objek utama
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
                     parsed_data = parsed_data[key]
                     break
 
-        # LOGIKA KALKULASI MATEMATIS PYTHON (Dinamis & Presisi)
+        # LOGIKA KALKULASI PYTHON (Dinamis & Presisi)
         final_results = []
         for item in parsed_data:
             kabel_list = item.get('KABEL_FEEDER_METERS', [])
             splitters = item.get('SPLITTER_TYPES', [])
 
-            # 1. Total Feeder Loss = Sum(Seluruh Segmen Kabel 1/2") * 0.07 dB/m
+            # 1. Feeder Loss
             total_panjang = 0.0
             if isinstance(kabel_list, list):
                 for val in kabel_list:
@@ -134,7 +132,7 @@ def convert():
 
             feeder_loss = round(total_panjang * 0.07, 2)
 
-            # 2. Total Splitter Loss = Sum(Seluruh Splitter yang Dilewati)
+            # 2. Splitter Loss
             splitter_loss = 0.0
             if isinstance(splitters, list):
                 for s in splitters:
@@ -147,8 +145,6 @@ def convert():
                         splitter_loss += 7.0
 
             splitter_loss = round(splitter_loss, 2)
-
-            # 3. Total Loss = Feeder Loss + Splitter Loss + 0.5 dB (Fixed margin connector & jumper)
             total_loss = round(feeder_loss + splitter_loss + 0.5, 2)
 
             final_results.append({
