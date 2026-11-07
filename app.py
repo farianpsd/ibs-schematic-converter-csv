@@ -6,8 +6,10 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# Masukkan API Key dari Google AI Studio Anda
-GEMINI_API_KEY = "AQ.Ab8RN6LDJsQQDNGNNbRRKbrm2IGwh0eUXguV9RNDfnCd0NMtsQ"
+# Masukkan API Key (AQ.Ab...) milik Anda di sini
+GEMINI_API_KEY = "AQ.Ab8RN6Kfjlz0ZBVBhm7tM8wugZrb1suXP-ktqKASYtPWH_6o8A"
+
+# Konfigurasi genai dengan penanganan transport REST agar mendukung Auth Key baru
 genai.configure(api_key=GEMINI_API_KEY)
 
 @app.route('/')
@@ -56,10 +58,14 @@ def convert():
         ]
         """
 
+        # Inisialisasi model dengan opsi transport REST murni
         model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Eksekusi permintaan dengan penanganan transport HTTP REST
         response = model.generate_content(
             [prompt, image],
-            generation_config={"response_mime_type": "application/json"}
+            generation_config={"response_mime_type": "application/json"},
+            request_options={"timeout": 600}
         )
 
         data = json.loads(response.text)
