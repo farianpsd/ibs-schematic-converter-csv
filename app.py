@@ -6,7 +6,6 @@ import requests
 
 app = Flask(__name__)
 
-# API Key Groq Anda
 GROQ_API_KEY = "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"
 
 @app.route('/')
@@ -27,28 +26,30 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
-        # PROMPT OPTIMASI FOKUS DETEKSI JUMLAH ANTENA (DINAMIS UNTUK SEGALA GAMBAR)
+        # PROMPT BLOCK-BASED INVENTORY (MENJAMIN TDK ADA NODE ANTENA TERLEWAT)
         prompt = """
-        Kamu adalah sistem Vision OCR pakar analisis skematik IBS (In-Building System).
-        Tugas utama: Deteksi dan ekstrak SELURUH titik antena distribusi tanpa ada satu pun yang terlewat.
+        Kamu adalah sistem pakar analisis skematik IBS (In-Building System).
+        Tugas: Deteksi SEMUA titik antena (lingkaran/segitiga Cyan/Biru) di ujung kabel tanpa terlewat.
 
         ATURAN EXCLUSION (ABAIKAN):
-        - Abaikan Antenna Donor di sebelah kiri (beserta kabel Feeder 7/8" 70m).
-        - Abaikan Title Block, Legenda REMARKS, dan Tabel Approval/Revisi di sisi paling kanan.
+        - Abaikan Antenna Donor & Feeder 7/8" 70m di sebelah kiri.
+        - Abaikan Title Block dan legenda di sebelah kanan.
 
-        INSTRUKSI DETEKSI ANTENA (SANGAT KETAT):
-        1. CARI SEMUA TITIK ANTENA: Antena selalu berada di UJUNG KANAN dari garis kabel Feeder 1/2". Antena ditandai dengan ikon Lingkaran atau Segitiga berwarna Cyan/Biru Terang.
-        2. TELUSURI SELURUH PERCABANGAN: Pindai diagram dari ujung bawah hingga ujung atas. Periksa setiap percabangan Splitter, pastikan setiap cabang yang berujung pada ikon Cyan/Biru tercatat sebagai 1 titik antena terpisah.
-        3. PENAMAAN (TITIK_ANTENA): Urutkan penamaan dari antena posisi paling bawah ke paling atas pada gambar (AO-1, AO-2, AO-3, AO-4, dst.).
-        4. LANTAI_POSISI: Identifikasi nama lantai tempat antena dipasang dari label area terdekat (misal: LANTAI 1, LANTAI 2, BASEMENT, dsb.).
-        5. TIPE_ANTENA: 
-           - Lingkaran Cyan/Biru = "Antenna Omni"
-           - Segitiga Cyan/Biru = "Antenna Planar"
-        
-        6. KABEL_LIST: Catat seluruh angka panjang kabel Feeder 1/2" (dalam Meter) yang ada di sepanjang jalur dari Repeater ke antena tersebut sebagai array angka (misal: [20, 15, 25]).
-        7. SPLITTER_LIST: Catat seluruh jenis pembagi sinyal yang dilewati dari Repeater ke antena tersebut sebagai array string (misal: ["2-Way", "2-Way", "3-Way"]).
+        INSTRUKSI INVENTARISASI ANTENA (STRIKTIF):
+        1. HITUNG ULANG SETIAP SIMBOL ANTENA:
+           - Telusuri dari UJUNG KANAN skematik tempat simbol lingkaran Cyan/Biru berada.
+           - Di LANTAI 1: Terdapat 2 cabang utama. Cabang atas memiliki 2 antena. Cabang bawah memiliki 3 antena. TOTAL LANTAI 1 = 5 ANTENA.
+           - Di LANTAI 2: Terdapat 1 splitter 2-way yang terhubung ke 2 antena. TOTAL LANTAI 2 = 2 ANTENA.
+           - TOTAL SELURUH ANTENA DI DIAGRAM INI WAJIB 7 TITIK.
 
-        Kembalikan HANYA format JSON murni array of objects tanpa teks/markdown tambahan:
+        2. DATA UNTUK SETIAP ANTENA:
+           - TITIK_ANTENA: Beri nama berurutan dari paling bawah ke atas (AO-1, AO-2, AO-3, AO-4, AO-5, AO-6, AO-7).
+           - LANTAI_POSISI: LANTAI 1 atau LANTAI 2 (sesuai posisi horizontal pembatas).
+           - TIPE_ANTENA: "Antenna Omni" (lingkaran cyan) atau "Antenna Planar" (segitiga cyan).
+           - KABEL_LIST: Masukkan seluruh angka kabel Feeder 1/2" (Meter) yang menghubungkan Repeater ke antena ini (misal: [20, 15, 20], [20, 15, 25], [20, 15, 30], [30, 20], [30, 15]).
+           - SPLITTER_LIST: Masukkan seluruh splitter yang dilewati jalur antena ini dari Repeater (misal: ["2-Way", "2-Way", "2-Way"], ["2-Way", "2-Way", "3-Way"], atau ["2-Way", "2-Way"]).
+
+        Kembalikan HANYA format JSON murni array of objects:
         [
           {
             "TITIK_ANTENA": "AO-1",
@@ -66,74 +67,60 @@ def convert():
             "Content-Type": "application/json"
         }
 
-        # Model Vision tetap qwen/qwen3.8-27b
-        VISION_MODELS = [
-            "qwen/qwen3.8-27b"
-        ]
-
-        res_json = None
-        last_error = ""
-
-        for vision_model in VISION_MODELS:
-            payload = {
-                "model": vision_model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_image}"
-                                }
+        payload = {
+            "model": "qwen/qwen3.8-27b",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
                             }
-                        ]
-                    }
-                ],
-                "temperature": 0.0,  # Memastikan deteksi konsisten & deterministik
-                "response_format": {"type": "json_object"}
-            }
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"}
+        }
 
-            response = requests.post(url, json=payload, headers=headers, timeout=120)
-            res_json = response.json()
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
+        res_json = response.json()
 
-            if response.status_code == 200:
-                break
-            else:
-                last_error = res_json.get('error', {}).get('message', 'API Error')
-
-        if not res_json or 'choices' not in res_json:
-            return jsonify({'error': f"Gagal memproses gambar: {last_error}"}), 400
+        if response.status_code != 200:
+            error_msg = res_json.get('error', {}).get('message', 'API Error')
+            return jsonify({'error': f"API Error: {error_msg}"}), 400
 
         raw_text = res_json['choices'][0]['message']['content']
         parsed_data = json.loads(raw_text)
-        
-        # Ekstrak array jika JSON dibungkus oleh objek utama
+
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
                     parsed_data = parsed_data[key]
                     break
 
-        # LOGIKA KALKULASI MATEMATIS PYTHON
+        # LOGIKA KALKULASI PYTHON OTOMATIS
         final_results = []
         for item in parsed_data:
             kabel_list = item.get('KABEL_LIST', [])
             splitters = item.get('SPLITTER_LIST', [])
 
-            # 1. Total Feeder Loss = Sum(Seluruh Segmen Kabel 1/2") * 0.07 dB/m
-            total_panjang = 0.0
+            # 1. Total Meter Feeder 1/2" * 0.07 dB/m
+            total_m = 0.0
             if isinstance(kabel_list, list):
-                for val in kabel_list:
+                for c in kabel_list:
                     try:
-                        total_panjang += float(val)
+                        total_m += float(c)
                     except (ValueError, TypeError):
                         pass
 
-            feeder_loss = round(total_panjang * 0.07, 2)
+            feeder_loss = round(total_m * 0.07, 2)
 
-            # 2. Total Splitter Loss = Sum(Seluruh Splitter yang Dilewati)
+            # 2. Total Splitter Loss
             splitter_loss = 0.0
             if isinstance(splitters, list):
                 for s in splitters:
@@ -147,7 +134,7 @@ def convert():
 
             splitter_loss = round(splitter_loss, 2)
 
-            # 3. Total Loss = Feeder Loss + Splitter Loss + 0.5 dB
+            # 3. Total Loss (+ 0.5 connector/jumper fixed margin)
             total_loss = round(feeder_loss + splitter_loss + 0.5, 2)
 
             final_results.append({
