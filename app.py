@@ -1,15 +1,14 @@
 from flask import Flask, render_template, request, jsonify
 import os
 import json
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from PIL import Image
 
 app = Flask(__name__)
 
-# Paste API Key yang sudah dibuat di Google AI Studio di sini
+# Masukkan API Key dari Google AI Studio Anda
 GEMINI_API_KEY = "PASTE_GEMINI_API_KEY_ANDA_DI_SINI"
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 @app.route('/')
 def index():
@@ -25,10 +24,8 @@ def convert():
         return jsonify({'error': 'File belum dipilih'}), 400
 
     try:
-        # Buka stream file gambar menggunakan PIL
         image = Image.open(file.stream)
 
-        # Prompt khusus instruksi analisis IBS Skematik
         prompt = """
         Kamu adalah sistem pakar analisis skematik IBS (In-Building System).
         Analisis gambar skematik yang diberikan dan ekstraksi seluruh data antena distribusi.
@@ -38,7 +35,7 @@ def convert():
         - Abaikan Title Block, Legenda REMARKS, Tabel Approval/Revisi di sisi paling kanan.
         
         ALUR PENELUSURAN DARI OUTPUT REPEATER KE ANTENA:
-        1. Identifikasi nama lantai tepat untuk setiap antena berdasarkan pembatas garis horizontal horizontal dan label nama lantai (misal LANTAI 1, LANTAI 2, dsb).
+        1. Identifikasi nama lantai tepat untuk setiap antena berdasarkan pembatas garis horizontal dan label nama lantai (misal LANTAI 1, LANTAI 2, dsb).
         2. Analisis tipe antena: Lingkaran Cyan/Biru = Antenna Omni, Segitiga Cyan/Biru = Antenna Planar.
         3. Berikan kode penamaan berurutan dari antena paling atas ke paling bawah (AO-1, AO-2, dst. atau AP-1, AP-2, dst.).
         4. Telusuri jalur kabel dari output Repeater ke setiap antena:
@@ -59,16 +56,12 @@ def convert():
         ]
         """
 
-        # Panggil Gemini Vision API
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[image, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(
+            [prompt, image],
+            generation_config={"response_mime_type": "application/json"}
         )
 
-        # Parse data JSON dari AI
         data = json.loads(response.text)
 
         return jsonify({
