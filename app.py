@@ -7,7 +7,7 @@ from PIL import Image
 app = Flask(__name__)
 
 # Masukkan API Key dari Google AI Studio Anda
-GEMINI_API_KEY = "PASTE_GEMINI_API_KEY_ANDA_DI_SINI"
+GEMINI_API_KEY = "AQ.Ab8RN6LDJsQQDNGNNbRRKbrm2IGwh0eUXguV9RNDfnCd0NMtsQ"
 genai.configure(api_key=GEMINI_API_KEY)
 
 @app.route('/')
