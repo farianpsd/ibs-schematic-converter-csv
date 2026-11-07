@@ -6,7 +6,6 @@ import requests
 
 app = Flask(__name__)
 
-# API Key Groq Anda
 GROQ_API_KEY = "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"
 
 @app.route('/')
@@ -27,42 +26,43 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
-        # PROMPT MURNI GENERIK & DINAMIS (TANPA HARDCODE CONTOH GAMBAR SEBELUMNYA)
-        prompt = """
-        Kamu adalah sistem pakar OCR & Vision untuk diagram skematik IBS (In-Building System).
-        Tugas utama: Deteksi dan ekstrak SELURUH titik antena distribusi beserta jalur komponennya secara presisi berdasarkan gambar yang diberikan.
+        # PROMPT MURNI GENERIK, FLEKSIBEL & DINAMIS (TANPA HARDCODE CONTOH)
+        system_instruction = "Kamu adalah parser skematik IBS. Tugasmu mendeteksi 100% seluruh terminal antena pada diagram tanpa melewatkan satu pun."
+        
+        user_prompt = """
+        Analisis gambar skematik IBS ini dan ekstrak seluruh titik antena distribusi secara dinamis.
 
-        ATURAN EXCLUSION (ABAIKAN):
-        - Abaikan Antenna Donor di sebelah kiri (beserta kabel Feeder 7/8" menuju Antenna Donor).
-        - Abaikan Title Block, Legenda REMARKS, dan Tabel Approval/Revisi di sisi paling kanan.
+        PENANGANAN AREA & ELEMEN PENTING:
+        - Abaikan Antenna Donor (di area luar/kiri) dan area tabel informasi di sebelah kanan.
+        - Fokus pada seluruh simbol antena (lingkaran atau segitiga warna Cyan/Biru) yang terhubung di ujung kabel Feeder 1/2".
 
-        INSTRUKSI EKSTRAKSI DATA MENTAH (GENERIK & ADAPTIF):
-        1. HITUNG SEMUA ANTENA:
-           - Temukan SEMUA simbol antena di ujung kabel Feeder 1/2" (berupa lingkaran atau segitiga berwarna Cyan/Biru).
-           - Hitung setiap titik antena yang ada pada gambar tanpa ada yang terlewat.
-           - Beri penamaan TITIK_ANTENA berurutan dari posisi paling bawah ke paling atas pada diagram (AO-1, AO-2, AO-3, dst.).
+        LANGKAH EKSTRAKSI MANDATORI:
+        1. DETEKSI SEMUA ANTENA:
+           - Pindai dari bawah ke atas pada diagram.
+           - Setiap ikon cyan di ujung kanan garis kabel ADALAH 1 TITIK ANTENA TERPISAH.
+           - Beri penamaan TITIK_ANTENA secara berurutan: AO-1, AO-2, AO-3, dst.
 
-        2. LANTAI_POSISI:
-           - Baca label teks nama lantai terdekat dari posisi antena tersebut (misal: LANTAI 1, LANTAI 2, BASEMENT, ROOFTOP, dsb.).
+        2. LOKASI LANTAI (LANTAI_POSISI):
+           - Baca teks nama lantai pada zona horizontal tempat antena berada (misal: LANTAI 1, LANTAI 2, BASEMENT, dsb.).
 
-        3. TIPE_ANTENA:
-           - Lingkaran Cyan/Biru = "Antenna Omni"
-           - Segitiga Cyan/Biru = "Antenna Planar"
+        3. TIPE ANTENA (TIPE_ANTENA):
+           - "Antenna Omni" jika berbentuk lingkaran Cyan/Biru.
+           - "Antenna Planar" jika berbentuk segitiga Cyan/Biru.
 
         4. KABEL_LIST:
-           - Catat SEMUA angka panjang kabel Feeder 1/2" (dalam Meter) yang berada di sepanjang garis jalur dari Repeater menuju titik antena tersebut sebagai array angka (misal: [20, 15, 25]).
+           - Catat semua nilai panjang kabel Feeder 1/2" (angka diikuti METER) yang dilewati jalur sinyal dari Repeater menuju titik antena tersebut dalam bentuk list/array angka (misal: [20, 15, 25]).
 
         5. SPLITTER_LIST:
-           - Catat SEMUA jenis pembagi sinyal (Splitter 2-Way, Splitter 3-Way, Splitter 4-Way, Coupler) yang dilewati dari Repeater menuju titik antena tersebut sebagai array string (misal: ["2-Way", "4-Way"]).
+           - Catat semua komponen pembagi sinyal (Splitter 2-Way, 3-Way, 4-Way, Coupler) yang berada di sepanjang jalur sinyal menuju antena tersebut dalam bentuk list/array string (misal: ["2-Way", "3-Way"]).
 
-        Kembalikan HANYA format JSON murni array of objects tanpa teks atau markdown tambahan:
+        Format keluaran WAJIB berupa JSON murni array of objects:
         [
           {
             "TITIK_ANTENA": "AO-1",
             "LANTAI_POSISI": "LANTAI 1",
             "TIPE_ANTENA": "Antenna Omni",
-            "KABEL_LIST": [20, 20],
-            "SPLITTER_LIST": ["2-Way", "4-Way"]
+            "KABEL_LIST": [20, 15, 30],
+            "SPLITTER_LIST": ["2-Way", "2-Way", "3-Way"]
           }
         ]
         """
@@ -77,9 +77,13 @@ def convert():
             "model": "qwen/qwen3.8-27b",
             "messages": [
                 {
+                    "role": "system",
+                    "content": system_instruction
+                },
+                {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": user_prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -109,13 +113,13 @@ def convert():
                     parsed_data = parsed_data[key]
                     break
 
-        # LOGIKA KALKULASI PYTHON OTOMATIS
+        # LOGIKA PERHITUNGAN PYTHON (DINAMIS MURNI)
         final_results = []
         for item in parsed_data:
             kabel_list = item.get('KABEL_LIST', [])
             splitters = item.get('SPLITTER_LIST', [])
 
-            # 1. Feeder Loss = Sum(Kabel Feeder 1/2") * 0.07 dB/m
+            # 1. Total Kabel Meter * 0.07 dB/m
             total_m = 0.0
             if isinstance(kabel_list, list):
                 for c in kabel_list:
@@ -126,7 +130,7 @@ def convert():
 
             feeder_loss = round(total_m * 0.07, 2)
 
-            # 2. Splitter Loss
+            # 2. Total Splitter Loss
             splitter_loss = 0.0
             if isinstance(splitters, list):
                 for s in splitters:
