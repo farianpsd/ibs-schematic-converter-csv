@@ -37,9 +37,9 @@ def convert():
         height, width, _ = img.shape
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # 1. Deteksi Warna Cyan/Biru Simbol Antenna Omni
+        # Masking Warna Cyan/Biru Muda
         lower_cyan = np.array([80, 100, 100])
-        upper_cyan = np.array([100, 255, 255])
+        upper_cyan = np.array([105, 255, 255])
         mask = cv2.inRange(hsv, lower_cyan, upper_cyan)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -47,29 +47,32 @@ def convert():
         antennas = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if 50 < area < 3000:
+            perimeter = cv2.arcLength(cnt, True)
+            
+            # Filter Ukuran Antena (Mengabaikan Antenna Donor yang terlalu besar)
+            if 50 < area < 2500 and perimeter > 0:
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
-                    # Filter area kanan (tempat simbol antena berada)
-                    if cX > width * 0.5: 
-                        antennas.append({"x": cX, "y": cY})
 
-        # Fallback jika tidak terdeteksi cyan
-        if not antennas:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            ocr_data = pytesseract.image_to_data(gray, config=r'--oem 3 --psm 6', output_type=pytesseract.Output.DATAFRAME)
-            ocr_data = ocr_data[ocr_data.text.notnull()]
-            for idx, row in ocr_data.iterrows():
-                text = str(row['text']).strip().upper()
-                if re.search(r'A[O0P]\s*[-_]?\s*\d+', text):
-                    antennas.append({"x": row['left'], "y": row['top']})
+                    # Abaikan Legenda Kanan (X > 82%) dan Antenna Donor Kiri (X < 20% & Y < 25%)
+                    if width * 0.25 < cX < width * 0.82:
+                        # Hitung Bentuk Geometri (Circularity)
+                        circularity = (4 * np.pi * area) / (perimeter ** 2)
+                        
+                        # Klasifikasi Tipe Antena
+                        if circularity > 0.65:
+                            tipe = "Antenna Omni"
+                        else:
+                            tipe = "Antenna Planar"
 
-        # Urutkan posisi antena dari atas ke bawah
+                        antennas.append({"x": cX, "y": cY, "tipe": tipe})
+
+        # Urutkan antena dari atas ke bawah
         antennas = sorted(antennas, key=lambda a: a['y'])
 
-        # 2. Cari Teks LANTAI untuk Menentukan Garis Pembatas (split_y)
+        # Deteksi Batas Lantai dari Teks OCR
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ocr_data = pytesseract.image_to_data(gray, config=r'--oem 3 --psm 6', output_type=pytesseract.Output.DATAFRAME)
         ocr_data = ocr_data[ocr_data.text.notnull()]
@@ -81,12 +84,7 @@ def convert():
                 y_lantai2 = row['top']
                 break
 
-        # Jika teks LANTAI 2 terdeteksi, garis pembatas berada tepat di bawah posisi Y teks tersebut
-        if y_lantai2 is not None:
-            split_y = y_lantai2 + 30
-        else:
-            # Batas toleransi presisi jika OCR teks tidak terbaca (sekitar pertengahan tinggi)
-            split_y = height * 0.53
+        split_y = (y_lantai2 + 35) if y_lantai2 is not None else (height * 0.53)
 
         top_floor = "LANTAI 2"
         bottom_floor = "LANTAI 1"
@@ -96,16 +94,19 @@ def convert():
         
         for idx, ant in enumerate(antennas, 1):
             posisi_lantai = top_floor if ant['y'] < split_y else bottom_floor
-            ant_name = f"AO-{total_antennas - idx + 1}"
+            
+            # Kode Prefix berdasarkan tipe
+            prefix = "AO" if ant['tipe'] == "Antenna Omni" else "AP"
+            ant_name = f"{prefix}-{total_antennas - idx + 1}"
 
             feeder_loss = 4.20 if posisi_lantai == top_floor else 3.50
-            splitter_loss = 10.50
+            splitter_loss = 7.00 if posisi_lantai == top_floor else 10.50
             total_loss = round(feeder_loss + splitter_loss + 0.50, 2)
 
             extracted_rows.append({
                 "TITIK_ANTENA": ant_name,
                 "LANTAI_POSISI": posisi_lantai,
-                "TIPE_ANTENA": "Antenna Omni",
+                "TIPE_ANTENA": ant['tipe'],
                 "FEEDER_LOSS_DB": feeder_loss,
                 "SPLITTER_LOSS_DB": splitter_loss,
                 "TOTAL_LOSS_DB": total_loss
