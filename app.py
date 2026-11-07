@@ -75,7 +75,7 @@ def convert():
 
         # Daftar model Vision aktif di Groq (dengan Fallback)
         VISION_MODELS = [
-            "qwen-3.8-27b"
+            "qwen/qwen3.8-27b"
         ]
 
         res_json = None
