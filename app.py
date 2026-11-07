@@ -27,7 +27,7 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
-        # Prompt meminta AI mengekstraksi angka mentah saja (fleksibel untuk skematik apapun)
+        # Prompt Generik & Dinamis untuk semua jenis skematik bangunan
         prompt = """
         Kamu adalah sistem pakar OCR skematik IBS (In-Building System).
         Analisis gambar skematik yang diberikan dan ekstrak data mentah untuk setiap titik antena.
@@ -36,15 +36,22 @@ def convert():
         - Abaikan Antenna Donor di sebelah kiri dan Feeder 7/8" 70 Meter menuju Antenna Donor.
         - Abaikan Title Block, Legenda REMARKS, Tabel Approval/Revisi di sisi paling kanan.
         
-        INSTRUKSI EKSTRAKSI DATA MENTAH:
-        1. TITIK_ANTENA: Berikan penamaan berurutan dari lantai paling bawah ke paling atas (misal AO-1 s/d AO-8).
-        2. LANTAI_POSISI: Identifikasi nama lantai tempat antena dipasang (misal LANTAI 1, LANTAI 2).
+        INSTRUKSI EKSTRAKSI DATA MENTAH (GENERIK & DINAMIS):
+        1. TITIK_ANTENA: Berikan penamaan berurutan dari antena paling bawah ke paling atas pada diagram (misal AO-1, AO-2, dst.).
+        2. LANTAI_POSISI: Baca nama lantai dari label area teks terdekat (misal: LANTAI 1, LANTAI 2, BASEMENT, ROOFTOP, dsb.).
         3. TIPE_ANTENA: Lingkaran Cyan/Biru = "Antenna Omni", Segitiga Cyan/Biru = "Antenna Planar".
-        4. PANJANG_TRUNK_METER: Catat angka panjang kabel Feeder 1/2" batang/utama dari output Repeater ke Splitter di lantai tersebut (misal: 25 atau 30).
-        5. PANJANG_CABANG_METER: Catat angka panjang kabel Feeder 1/2" cabang dari Splitter lantai ke titik antena tersebut (misal: 20, 25, 30, 35).
-        6. SPLITTER_TYPES: Daftar jenis splitter yang dilewati jalur tersebut dari Repeater ke antena (misal: ["2-Way", "4-Way"]).
+        
+        4. PANJANG_TRUNK_METER: 
+           - Cari kabel Feeder 1/2" utama yang langsung menghubungkan output Repeater / Splitter Utama menuju ke Splitter di lantai tempat antena tersebut berada.
+           - Ambil HANYA 1 nilai panjang kabel trunk untuk lantai tersebut (misal: 25 atau 30). JANGAN menjumlahkan kabel trunk antar lantai yang berbeda.
 
-        Kembalikan HANYA format JSON murni array of objects:
+        5. PANJANG_CABANG_METER: 
+           - Catat angka panjang kabel Feeder 1/2" cabang akhir yang berada di antara Splitter Lantai dan titik antena tersebut (misal: 20, 25, 30, 35).
+
+        6. SPLITTER_TYPES: 
+           - Telusuri alur sinyal dari Repeater hingga ke titik antena. Catat SEMUA tipe splitter yang dilewati pada jalur tersebut dalam bentuk daftar array (misal: ["2-Way", "4-Way"] atau ["3-Way"]).
+
+        Kembalikan HANYA format JSON murni array of objects tanpa teks/markdown tambahan:
         [
           {
             "TITIK_ANTENA": "AO-1",
@@ -63,7 +70,7 @@ def convert():
             "Content-Type": "application/json"
         }
 
-        # Model Vision tetap dipertahankan sesuai permintaan
+        # Model Vision tetap menggunakan qwen/qwen3.8-27b
         VISION_MODELS = [
             "qwen/qwen3.8-27b"
         ]
@@ -106,7 +113,7 @@ def convert():
         raw_text = res_json['choices'][0]['message']['content']
         parsed_data = json.loads(raw_text)
         
-        # Ekstrak array jika JSON dibungkus objek utama
+        # Ekstrak array jika JSON dibungkus oleh objek utama
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
