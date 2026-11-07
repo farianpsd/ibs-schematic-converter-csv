@@ -65,7 +65,7 @@ def convert():
         }
 
         payload = {
-            "model": "qwen-2.5-32b",
+            "model": "qwen/qwen3.8-27b",
             "messages": [
                 {
                     "role": "user",
