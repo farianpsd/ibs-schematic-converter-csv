@@ -27,9 +27,9 @@ def convert():
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         mime_type = file.mimetype or 'image/png'
 
-        # Prompt Generik & Dinamis untuk semua jenis skematik bangunan
+        # Prompt Generik & Dinamis dengan instruksi Spatial Tracing Ketat
         prompt = """
-        Kamu adalah sistem pakar OCR skematik IBS (In-Building System).
+        Kamu adalah sistem pakar OCR & Spatial Analysis skematik IBS (In-Building System).
         Analisis gambar skematik yang diberikan dan ekstrak data mentah untuk setiap titik antena.
 
         ATURAN EXCLUSION (ABAIKAN):
@@ -43,13 +43,15 @@ def convert():
         
         4. PANJANG_TRUNK_METER: 
            - Cari kabel Feeder 1/2" utama yang langsung menghubungkan output Repeater / Splitter Utama menuju ke Splitter di lantai tempat antena tersebut berada.
-           - Ambil HANYA 1 nilai panjang kabel trunk untuk lantai tersebut (misal: 25 atau 30). JANGAN menjumlahkan kabel trunk antar lantai yang berbeda.
+           - Ambil HANYA 1 nilai panjang kabel trunk untuk jalur lantai tersebut. JANGAN menjumlahkan kabel trunk antar lantai yang berbeda.
 
         5. PANJANG_CABANG_METER: 
            - Catat angka panjang kabel Feeder 1/2" cabang akhir yang berada di antara Splitter Lantai dan titik antena tersebut (misal: 20, 25, 30, 35).
 
-        6. SPLITTER_TYPES: 
-           - Telusuri alur sinyal dari Repeater hingga ke titik antena. Catat SEMUA tipe splitter yang dilewati pada jalur tersebut dalam bentuk daftar array (misal: ["2-Way", "4-Way"] atau ["3-Way"]).
+        6. SPLITTER_TYPES (KRUSIAL - PENELUSURAN DARI AWAL):
+           - TELUSURI GARIS JALUR SINYAL DARI TITIK KELUAR (OUTPUT) REPEATER HINGGA KETITIK ANTENA.
+           - Catat SEMUA komponen pembagi sinyal (Splitter 2-Way, Splitter 3-Way, Splitter 4-Way, Coupler) yang dilewati garis tersebut dari awal hingga akhir.
+           - Contoh: Jika dari Repeater melewati Splitter 2-Way lalu ke Splitter 4-Way lantai, kembalikan ["2-Way", "4-Way"]. Jika hanya melewati 1 Splitter 4-Way, kembalikan ["4-Way"].
 
         Kembalikan HANYA format JSON murni array of objects tanpa teks/markdown tambahan:
         [
@@ -70,7 +72,6 @@ def convert():
             "Content-Type": "application/json"
         }
 
-        # Model Vision tetap menggunakan qwen/qwen3.8-27b
         VISION_MODELS = [
             "qwen/qwen3.8-27b"
         ]
@@ -113,14 +114,13 @@ def convert():
         raw_text = res_json['choices'][0]['message']['content']
         parsed_data = json.loads(raw_text)
         
-        # Ekstrak array jika JSON dibungkus oleh objek utama
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
                     parsed_data = parsed_data[key]
                     break
 
-        # LOGIKA KALKULASI MATEMATIS OTOMATIS OLEH PYTHON
+        # LOGIKA KALKULASI MATEMATIS MURNI (TANPA ASSUMPTION / HARDCODE)
         final_results = []
         for item in parsed_data:
             trunk = float(item.get('PANJANG_TRUNK_METER', 0))
@@ -131,7 +131,7 @@ def convert():
             total_panjang = trunk + cabang
             feeder_loss = round(total_panjang * 0.07, 2)
 
-            # 2. Hitung Splitter Loss secara dinamis berdasarkan list splitter yang dilewati
+            # 2. Hitung Splitter Loss dinamis sesuai kompeonen yang benar-benar terdeteksi
             splitter_loss = 0.0
             for s in splitters:
                 s_str = str(s).lower()
@@ -144,7 +144,7 @@ def convert():
 
             splitter_loss = round(splitter_loss, 2)
 
-            # 3. Total Loss = Feeder Loss + Splitter Loss + 0.5 (fixed margin connector/jumper)
+            # 3. Total Loss = Feeder Loss + Splitter Loss + 0.5 (connector margin)
             total_loss = round(feeder_loss + splitter_loss + 0.5, 2)
 
             final_results.append({
