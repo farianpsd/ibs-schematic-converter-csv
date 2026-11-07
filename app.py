@@ -7,7 +7,7 @@ import requests
 app = Flask(__name__)
 
 # Kunci API milik Anda
-GEMINI_API_KEY = "AQ.Ab8RN6JCVsxxkb4DAx9NwdgEg_FW5hlHx64MqbMk0bZn5aNG3w"
+GEMINI_API_KEY = "AQ.Ab8RN6JHKlBkdOTEs72j3Z5WZ-uiL2QZu-fdngR6NxaGhpdWBw"
 
 @app.route('/')
 def index():
