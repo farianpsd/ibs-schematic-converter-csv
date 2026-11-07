@@ -65,7 +65,7 @@ def convert():
         }
 
         payload = {
-            "model": "llama-3.2-11b-vision-preview",
+            "model": "qwen-2.5-32b",
             "messages": [
                 {
                     "role": "user",
