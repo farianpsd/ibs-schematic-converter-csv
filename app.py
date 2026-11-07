@@ -6,8 +6,8 @@ import requests
 
 app = Flask(__name__)
 
-# Dapatkan API Key gratis dari https://console.groq.com/keys
-GROQ_API_KEY = "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"
+# Masukkan Groq API Key Anda
+GROQ_API_KEY = "gsk_PASTE_KEY_GROQ_ANDA_DI_SINI"
 
 @app.route('/')
 def index():
@@ -29,74 +29,96 @@ def convert():
 
         prompt = """
         Kamu adalah sistem pakar analisis skematik IBS (In-Building System).
-        Analisis gambar skematik yang diberikan dan ekstraksi seluruh data antena distribusi.
+        Analisis gambar skematik yang diberikan dan ekstraksi seluruh data antena distribusi dengan perhitungan presisi tinggi.
 
         ATURAN EXCLUSION (ABAIKAN):
-        - Abaikan Antenna Donor di sebelah kiri.
+        - Abaikan Antenna Donor di sebelah kiri dan Feeder 7/8" 70 Meter menuju Antenna Donor.
         - Abaikan Title Block, Legenda REMARKS, Tabel Approval/Revisi di sisi paling kanan.
         
         ALUR PENELUSURAN DARI OUTPUT REPEATER KE ANTENA:
-        1. Identifikasi nama lantai tepat untuk setiap antena berdasarkan pembatas garis horizontal dan label nama lantai (misal LANTAI 1, LANTAI 2, dsb).
-        2. Analisis tipe antena: Lingkaran Cyan/Biru = Antenna Omni, Segitiga Cyan/Biru = Antenna Planar.
-        3. Berikan kode penamaan berurutan dari antena paling atas ke paling bawah (AO-1, AO-2, dst. atau AP-1, AP-2, dst.).
-        4. Telusuri jalur kabel dari output Repeater ke setiap antena:
-           - Hitung total panjang Feeder 1/2" (dalam Meter) lalu hitung Feeder Loss (asumsi 1/2" = 0.07 dB/m).
-           - Identifikasi jumlah & tipe Splitter pada jalur tersebut (Splitter 2-Way = 3.5 dB, 3-Way = 6.0 dB, 4-Way = 7.0 dB).
-           - Hitung TOTAL_LOSS_DB = FEEDER_LOSS_DB + SPLITTER_LOSS_DB + 0.5 (jumper/connector).
+        1. Identifikasi LANTAI_POSISI dari setiap antena berdasarkan garis pembatas horizontal dan label lantai (LANTAI 1, LANTAI 2, dsb).
+        2. TIPE_ANTENA: Lingkaran Cyan/Biru = "Antenna Omni", Segitiga Cyan/Biru = "Antenna Planar".
+        3. Berikan TITIK_ANTENA berurutan dari paling bawah ke paling atas (misal AO-1 s/d AO-8).
+        
+        4. PERHITUNGAN FEEDER_LOSS_DB (SANGAT PENTING & KRUSIAL):
+           - Telusuri seluruh panjang kabel Feeder 1/2" dari Output Repeater hingga ke titik antena terkait.
+           - WAJIB JUMLAHKAN: Panjang Feeder Batang Utama (misal 25 Meter untuk Lantai 1 atau 30 Meter untuk Lantai 2) + Panjang Feeder Cabang Akhir ke Antena (misal 20m, 25m, 30m, 35m).
+           - Contoh Lantai 1: Feeder Utama (25m) + Cabang AO-4 (35m) = 60 Meter Total.
+           - FEEDER_LOSS_DB = Total Panjang Feeder (Meter) x 0.07 dB/m. Bulatkan ke 2 angka di belakang koma (misal: 60 x 0.07 = 4.2, 45 x 0.07 = 3.15).
 
-        Kembalikan respon HANYA dalam format JSON array murni tanpa markdown/penjelasan tambahan dengan struktur persis seperti berikut:
+        5. PERHITUNGAN SPLITTER_LOSS_DB:
+           - Hitung total loss komponen splitter yang dilewati pada jalur tersebut:
+             Splitter 2-Way = 3.5 dB, Splitter 3-Way = 6.0 dB, Splitter 4-Way = 7.0 dB.
+           - Jika melewati Splitter 2-Way dan Splitter 4-Way, SPLITTER_LOSS_DB = 3.5 + 7.0 = 10.5 dB.
+
+        6. PERHITUNGAN TOTAL_LOSS_DB:
+           - TOTAL_LOSS_DB = FEEDER_LOSS_DB + SPLITTER_LOSS_DB + 0.5 (margin fixed jumper & connector).
+
+        Kembalikan respon HANYA dalam format JSON array murni tanpa markdown/penjelasan tambahan dengan struktur seperti ini:
         [
           {
-            "TITIK_ANTENA": "AO-7",
-            "LANTAI_POSISI": "LANTAI 2",
+            "TITIK_ANTENA": "AO-1",
+            "LANTAI_POSISI": "LANTAI 1",
             "TIPE_ANTENA": "Antenna Omni",
             "FEEDER_LOSS_DB": 3.5,
-            "SPLITTER_LOSS_DB": 7.0,
-            "TOTAL_LOSS_DB": 11.0
+            "SPLITTER_LOSS_DB": 10.5,
+            "TOTAL_LOSS_DB": 14.5
           }
         ]
         """
 
         url = "https://api.groq.com/openai/v1/chat/completions"
-        
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
 
-        payload = {
-            "model": "qwen/qwen3.8-27b",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
+        # Daftar model Vision aktif di Groq (dengan Fallback)
+        VISION_MODELS = [
+            "qwen-3.8-27b",
+            "llama-3.2-11b-vision-preview",
+            "meta-llama/llama-4-scout-17b-16e-instruct"
+        ]
+
+        res_json = None
+        last_error = ""
+
+        for vision_model in VISION_MODELS:
+            payload = {
+                "model": vision_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_image}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"}
-        }
+                        ]
+                    }
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"}
+            }
 
-        response = requests.post(url, json=payload, headers=headers, timeout=120)
-        res_json = response.json()
+            response = requests.post(url, json=payload, headers=headers, timeout=120)
+            res_json = response.json()
 
-        if response.status_code != 200:
-            error_msg = res_json.get('error', {}).get('message', 'Terjadi kesalahan pada API Groq')
-            return jsonify({'error': f"API Error ({response.status_code}): {error_msg}"}), response.status_code
+            if response.status_code == 200:
+                break
+            else:
+                last_error = res_json.get('error', {}).get('message', 'API Error')
+
+        if not res_json or 'choices' not in res_json:
+            return jsonify({'error': f"Gagal memproses gambar: {last_error}"}), 400
 
         raw_text = res_json['choices'][0]['message']['content']
-        
-        # Parse JSON output
         parsed_data = json.loads(raw_text)
         
-        # Jika hasil dibungkus objek (misal {"data": [...]}), ambil array di dalamnya
+        # Ambil array jika JSON terbungkus objek utama
         if isinstance(parsed_data, dict):
             for key in parsed_data:
                 if isinstance(parsed_data[key], list):
