@@ -1,15 +1,13 @@
 from flask import Flask, render_template, request, jsonify
 import os
 import json
-import google.generativeai as genai
-from PIL import Image
+import base64
+import requests
 
 app = Flask(__name__)
 
-# Masukkan API Key (AQ.Ab...) milik Anda di sini
+# Kunci API milik Anda
 GEMINI_API_KEY = "AQ.Ab8RN6JCVsxxkb4DAx9NwdgEg_FW5hlHx64MqbMk0bZn5aNG3w"
-
-genai.configure(api_key=GEMINI_API_KEY)
 
 @app.route('/')
 def index():
@@ -25,7 +23,9 @@ def convert():
         return jsonify({'error': 'File belum dipilih'}), 400
 
     try:
-        image = Image.open(file.stream)
+        image_bytes = file.read()
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        mime_type = file.mimetype or 'image/png'
 
         prompt = """
         Kamu adalah sistem pakar analisis skematik IBS (In-Building System).
@@ -57,15 +57,37 @@ def convert():
         ]
         """
 
-        # Menggunakan identifier model 'gemini-1.5-flash-latest'
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # Endpoint REST API Gemini v1beta murni
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         
-        response = model.generate_content(
-            [prompt, image],
-            generation_config={"response_mime_type": "application/json"}
-        )
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "response_mime_type": "application/json"
+            }
+        }
 
-        data = json.loads(response.text)
+        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=180)
+        res_json = response.json()
+
+        if response.status_code != 200:
+            error_msg = res_json.get('error', {}).get('message', 'Terjadi kesalahan pada API')
+            return jsonify({'error': f"API Error ({response.status_code}): {error_msg}"}), response.status_code
+
+        raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
+        data = json.loads(raw_text)
 
         return jsonify({
             'success': True,
