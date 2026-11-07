@@ -6,8 +6,8 @@ import requests
 
 app = Flask(__name__)
 
-# Token AQ.Ab Anda
-GEMINI_API_KEY = "AQ.Ab8RN6JHK1BkdOTEs72j3Z5WZ-uiL2QZu-fdngR6NxaGhpdWBw"
+# Dapatkan API Key gratis dari https://console.groq.com/keys
+GROQ_API_KEY = "MASUKKAN_GROQ_API_KEY_ANDA_DI_SINI"
 
 @app.route('/')
 def index():
@@ -57,49 +57,56 @@ def convert():
         ]
         """
 
-        # Endpoint tanpa key di URL
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        url = "https://api.groq.com/openai/v1/chat/completions"
         
-        # Header dual-authentication (Mendukung API Key biasa maupun Token AQ.Ab)
         headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {GEMINI_API_KEY}',
-            'x-goog-api-key': GEMINI_API_KEY
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
         }
 
         payload = {
-            "contents": [
+            "model": "llama-3.2-11b-vision-preview",
+            "messages": [
                 {
-                    "parts": [
-                        {"text": prompt},
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
                         {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": base64_image
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
                             }
                         }
                     ]
                 }
             ],
-            "generationConfig": {
-                "response_mime_type": "application/json"
-            }
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"}
         }
 
-        response = requests.post(url, json=payload, headers=headers, timeout=180)
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
         res_json = response.json()
 
         if response.status_code != 200:
-            error_msg = res_json.get('error', {}).get('message', 'Terjadi kesalahan pada API')
+            error_msg = res_json.get('error', {}).get('message', 'Terjadi kesalahan pada API Groq')
             return jsonify({'error': f"API Error ({response.status_code}): {error_msg}"}), response.status_code
 
-        raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
-        data = json.loads(raw_text)
+        raw_text = res_json['choices'][0]['message']['content']
+        
+        # Parse JSON output
+        parsed_data = json.loads(raw_text)
+        
+        # Jika hasil dibungkus objek (misal {"data": [...]}), ambil array di dalamnya
+        if isinstance(parsed_data, dict):
+            for key in parsed_data:
+                if isinstance(parsed_data[key], list):
+                    parsed_data = parsed_data[key]
+                    break
 
         return jsonify({
             'success': True,
-            'count': len(data),
-            'data': data
+            'count': len(parsed_data) if isinstance(parsed_data, list) else 1,
+            'data': parsed_data
         })
 
     except Exception as e:
