@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # Membaca API Key AQ.Ab8... dari Environment Variable di file WSGI PythonAnywhere
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-client = genai.Client(vertexai=True, api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
