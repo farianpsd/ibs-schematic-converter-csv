@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import base64
 import requests
 from flask import Flask, render_template, request, jsonify
@@ -8,6 +9,7 @@ from PIL import Image
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+CACHED_MODELS = []
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
@@ -43,6 +45,44 @@ Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,
 
 6. DILARANG MENAMBAHKAN TEKS PENJELASAN APAPUN SEBELUM ATAU SESUDAH CSV.
 """
+
+def get_available_gemini_models():
+    global CACHED_MODELS
+    if CACHED_MODELS:
+        return CACHED_MODELS
+
+    base_host = "generativelanguage.googleapis.com"
+    list_url = f"https://{base_host}/v1beta/models?key={GEMINI_API_KEY}"
+    try:
+        resp = requests.get(list_url, timeout=15)
+        if resp.status_code == 200:
+            models_data = resp.json().get("models", [])
+            valid_names = []
+            for m in models_data:
+                methods = m.get("supportedGenerationMethods", [])
+                name = m.get("name", "").replace("models/", "")
+                if "generateContent" in methods and "gemini" in name:
+                    if not any(x in name for x in ["embedding", "aqa", "imagen", "veo", "tts", "audio", "robotics", "computer-use"]):
+                        valid_names.append(name)
+
+            # Prioritaskan gemini-3.8-flash, lalu flash lainnya, lalu pro
+            def model_priority(n):
+                if n == "gemini-3.8-flash":
+                    return 0
+                if "flash" in n and "lite" not in n:
+                    return 1
+                if "flash" in n:
+                    return 2
+                return 3
+
+            valid_names.sort(key=model_priority)
+            if valid_names:
+                CACHED_MODELS = valid_names[:4]
+                return CACHED_MODELS
+    except Exception:
+        pass
+
+    return ["gemini-3.8-flash"]
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
@@ -122,38 +162,53 @@ def chat():
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
         parts.append({"text": prompt_text})
 
-        candidate_models = [
-            'gemini-3.8-flash',
-            'gemini-3.8-flash-lite',
-            'gemini-3.8-pro'
-        ]
+        candidate_models = get_available_gemini_models()
         raw_text = None
         last_error = None
 
         for model_name in candidate_models:
             base_host = "generativelanguage.googleapis.com"
             url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-            payload = {
+
+            payload_with_thinking = {
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {
-                        "thinkingLevel": "LOW"
-                    }
+                    "thinkingConfig": {"thinkingLevel": "LOW"}
                 }
             }
-            try:
-                resp = requests.post(url, json=payload, timeout=100)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    if raw_text:
+            payload_basic = {
+                "contents": [{"parts": parts}],
+                "generationConfig": {"temperature": 0.1}
+            }
+
+            current_payload = payload_with_thinking if "3." in model_name else payload_basic
+
+            for attempt in range(3):
+                try:
+                    resp = requests.post(url, json=current_payload, timeout=90)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        if raw_text:
+                            break
+                    elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                        # Jika model tertentu tidak menerima thinkingConfig, kirim ulang tanpa thinkingConfig
+                        current_payload = payload_basic
+                        continue
+                    elif resp.status_code == 503:
+                        last_error = f"HTTP 503 ({model_name}): Server Gemini sedang sibuk."
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    else:
+                        last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
                         break
-                else:
-                    last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
-            except Exception as err:
-                last_error = str(err)
-                continue
+                except Exception as err:
+                    last_error = f"{model_name}: {str(err)}"
+                    break
+
+            if raw_text:
+                break
 
         if not raw_text:
             raise Exception(f"Detail error: {last_error}")
