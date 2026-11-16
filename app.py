@@ -38,11 +38,11 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    Telusuri seluruh jalur dari port output sumber distribusi (MCM / Repeater) sampai ke masing-masing titik antena, lalu hitung:
 
    A. `FEEDER_LOSS_DB` (Total akumulasi loss kabel feeder + Margin Bending Lapangan 10% - 15%):
-      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut:
+      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut (bedakan dengan teliti ukuran kabel tiap segmen, khususnya kabel riser antar-lantai 7/8" vs kabel distribusi 1/2"):
         * Feeder 1/2" = Panjang (m) * 0.07 dB/m
         * Feeder 7/8" = Panjang (m) * 0.04 dB/m
         * Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
-      - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12; atau 1.10 untuk riser vertikal lurus dan 1.15 untuk jalur banyak belokan):
+      - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12):
         FEEDER_LOSS_DB = round(Total_Feeder_Loss_Teoritis * 1.12, 2)
 
    B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM hingga antena tersebut):
@@ -213,7 +213,7 @@ def chat():
         start_time = time.time()
 
         for model_name in candidate_models:
-            if time.time() - start_time > 75:
+            if time.time() - start_time > 85:
                 break
 
             base_host = "generativelanguage.googleapis.com"
@@ -223,7 +223,7 @@ def chat():
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "LOW"}
+                    "thinkingConfig": {"thinkingLevel": "MEDIUM"}
                 }
             }
             payload_basic = {
@@ -231,11 +231,11 @@ def chat():
                 "generationConfig": {"temperature": 0.1}
             }
 
-            current_payload = payload_with_thinking if "3." in model_name else payload_basic
+            current_payload = payload_with_thinking if ("3." in model_name and "lite" not in model_name) else payload_basic
 
             for attempt in range(2):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=55)
+                    resp = requests.post(url, json=current_payload, timeout=75)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
