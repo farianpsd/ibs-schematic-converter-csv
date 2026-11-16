@@ -289,7 +289,7 @@ def call_gemini_step_safe(parts, step_label):
         }
 
         current_payload = payload_with_thinking if "3." in model_name else payload_basic
-        req_timeout = min(42, max(20, int(72 - elapsed)))
+        req_timeout = 88
 
         try:
             resp = requests.post(url, json=current_payload, timeout=req_timeout)
