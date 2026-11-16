@@ -16,7 +16,7 @@ SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh titik antena indoor dari skematik multi-lantai menjadi 1 tabel CSV Link Budget per titik antena berdasarkan spesifikasi perangkat pasif RF merek G-WAVE dan toleransi instalasi lapangan.
 
 ATURAN KELUARAN (STRICT CSV):
-1. WAJIB HANYA MENGELUARKAN TEKS CSV MURNI.
+1. WAJIB HANYA MENGELUARKAN TEKS CSV MURNI (kecuali blok <RISER_SUMMARY> jika diminta secara eksplisit).
 2. DILARANG KERAS menggunakan simbol Markdown seperti bold (**), backtick (`), atau pagar (#) di mana pun.
 3. BARIS PERTAMA (HEADER) WAJIB EXACT SAMA SEPERTI INI:
 TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB
@@ -114,10 +114,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # Resolusi 2000px menjaga angka kabel kecil (30m vs 40m) dan garis riser sejajar tetap tajam
-    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+    img.thumbnail((1850, 1850), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -147,13 +146,75 @@ def parse_uploaded_images(req):
             b64_images.append(encode_image_jpeg_b64(img))
     return b64_images
 
-def clean_csv_output(raw_text):
+def extract_riser_summary_and_clean_csv(raw_text):
     text = raw_text.strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
+
+    riser_summary = ""
+    match = re.search(r"<RISER_SUMMARY>(.*?)</RISER_SUMMARY>", text, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        riser_summary = match.group(1).strip()
+        text = re.sub(r"<RISER_SUMMARY>.*?</RISER_SUMMARY>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+
     text = re.sub(r"\s+(?=(?:LT\d+-)?(?:AO|AP)-\d+,)", "\n", text)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return "\n".join(lines)
+    return "\n".join(lines), riser_summary
+
+def call_gemini_single_step(parts, candidate_models, start_time):
+    raw_text = None
+    last_error = None
+
+    for model_name in candidate_models:
+        if time.time() - start_time > 82:
+            break
+
+        base_host = "generativelanguage.googleapis.com"
+        url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+
+        payload_with_thinking = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "thinkingConfig": {"thinkingLevel": "MEDIUM"}
+            }
+        }
+        payload_basic = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {"temperature": 0.1}
+        }
+
+        current_payload = payload_with_thinking if "3." in model_name else payload_basic
+
+        for attempt in range(2):
+            try:
+                resp = requests.post(url, json=current_payload, timeout=55)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    if raw_text:
+                        return raw_text, None
+                elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                    current_payload = payload_basic
+                    continue
+                elif resp.status_code == 429:
+                    last_error = f"Kuota API Gemini ({model_name}) penuh sementara (HTTP 429)."
+                    if attempt == 0 and (time.time() - start_time < 60):
+                        time.sleep(4)
+                        continue
+                    break
+                elif resp.status_code == 503:
+                    last_error = f"HTTP 503 ({model_name}): Server sibuk."
+                    time.sleep(2)
+                    continue
+                else:
+                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+                    break
+            except Exception as err:
+                last_error = f"{model_name}: {str(err)}"
+                break
+
+    return None, last_error
 
 @app.route('/')
 def index():
@@ -178,77 +239,75 @@ def chat():
             else (request.get_json(silent=True) or {}).get('message', '')
         )
 
-        prompt_text = (
-            f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Telusuri seluruh jalur distribusi mulai dari output MCM/Combiner/HC (termasuk segmen kabel awal dan splitter pertama) menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh.\n"
-            f"Catatan tambahan user: {user_message}"
-        )
-
-        parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
-        parts.append({"text": prompt_text})
-
         candidate_models = get_available_gemini_models()
-        raw_text = None
-        last_error = None
+        all_csv_rows = []
+        header_line = "TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB"
+        accumulated_riser_notes = []
         start_time = time.time()
 
-        for model_name in candidate_models:
-            if time.time() - start_time > 80:
-                break
+        for idx, b64 in enumerate(b64_images):
+            if time.time() - start_time > 82:
+                raise Exception("Waktu eksekusi total mendekati batas server (82s). Silakan proses maksimal 2 gambar per sesi.")
 
-            base_host = "generativelanguage.googleapis.com"
-            url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            is_multi = len(b64_images) > 1
+            step_prompt = f"{SYSTEM_INSTRUCTION}\n\n"
 
-            payload_with_thinking = {
-                "contents": [{"parts": parts}],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "MEDIUM"}
-                }
-            }
-            payload_basic = {
-                "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": 0.1}
-            }
+            if not is_multi:
+                step_prompt += (
+                    "Telusuri seluruh jalur distribusi mulai dari output MCM/Combiner/HC (termasuk segmen kabel awal dan splitter pertama) "
+                    "menuju setiap titik antena indoor pada gambar ini dan keluarkan tabel CSV utuh.\n"
+                )
+            elif idx == 0:
+                step_prompt += (
+                    f"Ini adalah GAMBAR KE-1 dari total {len(b64_images)} gambar skematik IBS yang saling terhubung.\n"
+                    "TUGAS 1 (CSV ANTENA GAMBAR INI): Keluarkan baris CSV HANYA untuk titik antena indoor yang berada di dalam gambar ke-1 ini, "
+                    "dihitung mulai dari output MCM/Combiner/HC (termasuk segmen kabel awal dan splitter pertama).\n"
+                    "TUGAS 2 (RINGKASAN RISER KELUAR): Di bagian paling bawah setelah CSV, tambahkan blok <RISER_SUMMARY>...</RISER_SUMMARY> "
+                    "yang mencatat secara persis: (a) ukuran & panjang kabel awal dari output MCM/Combiner/HC ke splitter pertama, "
+                    "(b) tipe/jumlah cabang splitter utama pertama & loss-nya, (c) jumlah perangkat splitter yang sudah dilewati sebelum kabel riser keluar, "
+                    "dan (d) daftar lengkap setiap kabel riser yang keluar menuju lantai lain (tulis label tujuan seperti TO LT 3, TO LT 2, ukuran kabel 7/8\" atau 1/2\", dan panjang meternya masing-masing secara tepat tanpa tertukar).\n"
+                )
+            else:
+                prev_notes = "\n".join(accumulated_riser_notes)
+                step_prompt += (
+                    f"Ini adalah GAMBAR KE-{idx + 1} dari total {len(b64_images)} gambar skematik IBS yang saling terhubung.\n"
+                    f"REFERENSI JALUR DARI GAMBAR SEBELUMNYA (WAJIB DIPAKAI SEBAGAI TITIK AWAL AKUMULASI):\n{prev_notes}\n\n"
+                    "TUGAS: Cocokkan setiap label 'FROM LT X' pada gambar ini dengan label 'TO LT X' pada referensi di atas (JANGAN tertukar panjang riser antar-lantai!). "
+                    "Akumulasikan seluruh feeder loss (kabel awal + kabel riser tujuan + kabel cabang lantai ini, lalu dikali margin bending 1.12), "
+                    "splitter loss (splitter utama pertama + semua splitter di lantai ini), dan connector loss (total perangkat splitter dari awal sampai akhir * 0.20 + 0.50 dB) "
+                    "untuk seluruh titik antena indoor yang ada pada gambar ini.\n"
+                )
+                if idx < len(b64_images) - 1:
+                    step_prompt += (
+                        "Jika dari gambar ini masih ada kabel riser keluar ke gambar berikutnya, tambahkan juga <RISER_SUMMARY>...</RISER_SUMMARY> di bagian paling bawah.\n"
+                    )
 
-            current_payload = payload_with_thinking if "3." in model_name else payload_basic
+            if user_message:
+                step_prompt += f"Catatan tambahan user: {user_message}\n"
 
-            for attempt in range(2):
-                try:
-                    resp = requests.post(url, json=current_payload, timeout=75)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                        if raw_text:
-                            break
-                    elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                        current_payload = payload_basic
-                        continue
-                    elif resp.status_code == 429:
-                        last_error = f"Kuota API Gemini ({model_name}) sedang penuh sementara (HTTP 429). Tunggu 30-60 detik lalu coba lagi."
-                        if attempt == 0 and (time.time() - start_time < 60):
-                            time.sleep(5)
-                            continue
-                        break
-                    elif resp.status_code == 503:
-                        last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(2)
-                        continue
-                    else:
-                        last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
-                        break
-                except Exception as err:
-                    last_error = f"{model_name}: {str(err)}"
-                    break
+            parts = [
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+                {"text": step_prompt}
+            ]
 
-            if raw_text:
-                break
+            raw_text, err = call_gemini_single_step(parts, candidate_models, start_time)
+            if not raw_text:
+                raise Exception(f"Detail error (Gambar {idx + 1}): {err}")
 
-        if not raw_text:
-            raise Exception(f"Detail error: {last_error}")
+            cleaned_csv, riser_summary = extract_riser_summary_and_clean_csv(raw_text)
+            if riser_summary:
+                accumulated_riser_notes.append(f"[Dari Gambar {idx + 1}]:\n{riser_summary}")
 
-        csv_result = clean_csv_output(raw_text)
+            for line in cleaned_csv.splitlines():
+                if line.upper().startswith("TITIK_ANTENA"):
+                    header_line = line
+                elif "," in line and not line.startswith("<"):
+                    all_csv_rows.append(line.strip())
+
+        if not all_csv_rows:
+            raise Exception("Tidak ada data titik antena yang berhasil diekstrak dari gambar.")
+
+        csv_result = "\n".join([header_line] + all_csv_rows)
 
         return jsonify({
             'status': 'success',
