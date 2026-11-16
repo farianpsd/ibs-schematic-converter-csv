@@ -112,9 +112,10 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    # Resolusi 2000px menjaga angka kabel kecil (30m vs 40m) dan garis riser sejajar tetap tajam
+    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=88)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
