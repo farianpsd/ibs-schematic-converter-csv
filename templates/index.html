@@ -61,7 +61,7 @@
             <span class="clear-all-btn" onclick="clearAllImages()">Hapus Semua</span>
         </div>
         <div class="input-row">
-            <input type="file" id="fileInput" accept="image/*" multiple style="display: none;" onchange="handleFileSelect(event)">
+            <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf" multiple style="display: none;" onchange="handleFileSelect(event)">
             <button type="button" class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">📁 Pilih Gambar</button>
             <button type="button" id="processBtn" class="btn btn-primary" onclick="sendMessage()">Proses</button>
         </div>
