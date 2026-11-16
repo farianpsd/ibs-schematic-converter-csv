@@ -9,7 +9,7 @@ import io
 app = Flask(__name__)
 
 # Ganti dengan API Key Gemini dari Google AI Studio kamu
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+GEMINI_API_KEY = "AQ.Ab8RN6KlpCqouj_YOps1SA1hle7geYY7Ja9hq_ECTw_CnIaDhg"
 genai.configure(api_key=GEMINI_API_KEY)
 
 @app.route('/')
