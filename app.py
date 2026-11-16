@@ -30,6 +30,7 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.) yang terhubung di dalam rangkaian skematik utama.
    - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), Antenna Donor, maupun simbol legenda di dalam etiket REMARKS.
    - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner melewati seluruh splitter tingkat 1, tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
+   - WAJIB HITUNG INDIVIDUAL PER TITIK ANTENA: Panjang kabel tiap cabang antena berbeda-beda; DILARANG menyamaratakan nilai FEEDER_LOSS_DB, SPLITTER_LOSS_DB, atau TOTAL_LOSS_DB ke seluruh antena dalam satu lantai.
    - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
@@ -63,7 +64,7 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    C. `TOTAL_LOSS_DB` (Termasuk Dynamic Connector Loss + Jumper):
       - Hitung Connector_Jumper_Loss = (Jumlah perangkat Splitter/Coupler yang dilewati * 0.20 dB) + 0.50 dB (untuk konektor output MCM + jumper & konektor antena).
       - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + Connector_Jumper_Loss, 2)
-      - JANGAN dikurangi dengan Antenna Gain.
+      - Pastikan TOTAL_LOSS_DB selalu lebih besar dari (FEEDER_LOSS_DB + SPLITTER_LOSS_DB). JANGAN dikurangi dengan Antenna Gain.
 
 6. ATURAN FORMAT ANGKA & BARIS:
    - Semua nilai loss wajib berupa satu angka desimal matang (contoh: 3.92, 16.5, 21.52). DILARANG menulis rumus atau tanda tambah.
@@ -80,7 +81,7 @@ def get_available_gemini_models():
     list_url = f"https://{base_host}/v1beta/models?key={GEMINI_API_KEY}"
     blacklist = [
         "embedding", "aqa", "imagen", "veo", "tts", "audio",
-        "robotics", "computer-use", "image", "2.0", "2.5"
+        "robotics", "computer-use", "image", "2.0", "2.5", "lite"
     ]
     try:
         resp = requests.get(list_url, timeout=10)
@@ -97,9 +98,9 @@ def get_available_gemini_models():
             def model_priority(n):
                 if n == "gemini-3.8-flash":
                     return 0
-                if n == "gemini-flash-latest":
-                    return 1
                 if "3." in n and "flash" in n:
+                    return 1
+                if n == "gemini-flash-latest":
                     return 2
                 if "pro" in n:
                     return 3
@@ -201,7 +202,7 @@ def chat():
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
             f"Abaikan seluruh kolom etiket/REMARKS di sisi kanan gambar, ambil nama site dari kotak judul di bawah logo kanan atas untuk baris SITE_NAME, "
-            f"lalu telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh."
+            f"lalu telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai secara individual dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh."
         )
 
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
@@ -231,7 +232,7 @@ def chat():
                 "generationConfig": {"temperature": 0.1}
             }
 
-            current_payload = payload_with_thinking if ("3." in model_name and "lite" not in model_name) else payload_basic
+            current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
             for attempt in range(2):
                 try:
@@ -245,7 +246,10 @@ def chat():
                         current_payload = payload_basic
                         continue
                     elif resp.status_code == 429:
-                        last_error = f"HTTP 429 ({model_name}): Limit kuota sementara, beralih ke model lain..."
+                        last_error = f"Kuota API Gemini ({model_name}) sedang penuh/limit sementara (HTTP 429). Tunggu 30-60 detik lalu klik Proses kembali."
+                        if attempt == 0 and (time.time() - start_time < 65):
+                            time.sleep(5)
+                            continue
                         break
                     elif resp.status_code == 503:
                         last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
@@ -262,7 +266,7 @@ def chat():
                 break
 
         if not raw_text:
-            raise Exception(f"Detail error: {last_error}")
+            raise Exception(f"{last_error}")
 
         site_name, csv_filename, csv_result = parse_site_and_csv(raw_text)
 
