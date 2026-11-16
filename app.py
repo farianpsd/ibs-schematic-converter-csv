@@ -261,8 +261,12 @@ def calculate_rf_csv_from_antennas(items):
 def call_gemini_high_precision(parts, step_label):
     candidate_models = get_available_gemini_models()
     last_error = None
+    start_ts = time.time()
 
     for model_name in candidate_models:
+        if time.time() - start_ts > 78:
+            break
+
         base_host = "generativelanguage.googleapis.com"
         url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -283,28 +287,30 @@ def call_gemini_high_precision(parts, step_label):
         }
 
         current_payload = payload_with_thinking if "3." in model_name else payload_basic
+        rem = max(25, int(85 - (time.time() - start_ts)))
 
-        for attempt in range(2):
-            try:
-                resp = requests.post(url, json=current_payload, timeout=75)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            resp = requests.post(url, json=current_payload, timeout=rem)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                if raw_text:
+                    return parse_json_payload(raw_text)
+            elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                rem2 = max(20, int(85 - (time.time() - start_ts)))
+                resp2 = requests.post(url, json=payload_basic, timeout=rem2)
+                if resp2.status_code == 200:
+                    raw_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"]
                     if raw_text:
                         return parse_json_payload(raw_text)
-                elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                    current_payload = payload_basic
-                    continue
-                elif resp.status_code in (429, 503):
-                    last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
-                    time.sleep(3)
-                    continue
-                else:
-                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
-                    break
-            except Exception as err:
-                last_error = f"{model_name}: {str(err)}"
-                break
+            elif resp.status_code in (429, 503):
+                last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
+                time.sleep(1)
+                continue
+            else:
+                last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+        except Exception as err:
+            last_error = f"{model_name}: {str(err)}"
 
     raise Exception(f"Gagal pada {step_label}: {last_error}")
 
