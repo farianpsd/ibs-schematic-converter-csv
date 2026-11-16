@@ -37,7 +37,7 @@ COUPLER_THROUGH_DB = {
 }
 
 SYSTEM_INSTRUCTION = """
-Kamu adalah Senior RF Engineer IBS (In-Building System). Tugasmu HANYA membaca gambar skematik multi-lantai dan mengekstrak daftar urutan segmen kabel serta perangkat pasif yang dilewati dari port output MCM/Combiner menuju setiap titik Antena Indoor dalam format JSON valid.
+Kamu adalah Senior RF Engineer IBS (In-Building System). Tugasmu membaca gambar skematik multi-lantai dan mengekstrak daftar urutan segmen kabel serta perangkat pasif yang dilewati dari port output MCM/Combiner menuju setiap titik Antena Indoor dalam format JSON ringkas.
 
 ATURAN EKSTRAKSI TOPOLOGI:
 1. HANYA ekstrak titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
@@ -47,29 +47,13 @@ ATURAN EKSTRAKSI TOPOLOGI:
    - `id`: kode antena (jika antar-lantai memakai nomor sama, beri awalan lantai seperti "LT4-AO-1", "LT3-AO-1", agar unik).
    - `floor`: nama lantai dalam huruf kapital (contoh: "LANTAI 4", "LANTAI 3", "LANTAI 2").
    - `antenna_type`: jenis antena (contoh: "Antenna Omni", "Antenna Planar").
-   - `cables`: list seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut, masing-masing berisi `{"size": "1/2" atau "7/8" atau "1 1/4", "length_m": angka_meter}`.
-   - `passives`: list seluruh perangkat Splitter/Coupler setelah port output MCM hingga antena tersebut (JANGAN masukkan MCM/Combiner ke dalam list ini):
-     * Untuk Splitter: hitung TOTAL seluruh jalur kabel yang keluar dari sisi output komponen tersebut (termasuk garis riser vertikal yang sejajar/berdekatan maupun cabang horizontal), lalu tulis `{"type": "splitter", "ways": 2 atau 3 atau 4}`.
-     * Untuk Coupler: tulis `{"type": "coupler", "value_db": angka_nilai_coupler, "port": "coupled" atau "through"}`.
+   - `cables`: list segmen kabel dari output MCM hingga antena, format ringkas `{"s": "1/2" atau "7/8" atau "1 1/4", "m": angka_meter}`.
+   - `passives`: list perangkat Splitter/Coupler setelah port output MCM hingga antena (JANGAN masukkan MCM/Combiner ke dalam list ini):
+     * Untuk Splitter: hitung TOTAL seluruh jalur kabel yang keluar dari sisi output komponen tersebut (termasuk garis riser vertikal yang sejajar/berdekatan maupun cabang horizontal), tulis `{"t": "splitter", "w": 2 atau 3 atau 4}`.
+     * Untuk Coupler: tulis `{"t": "coupler", "v": angka_nilai_coupler, "p": "coupled" atau "through"}`.
 
 FORMAT KELUARAN WAJIB JSON OBJECT MURNI TANPA MARKDOWN:
-{
-  "antennas": [
-    {
-      "id": "LT4-AO-1",
-      "floor": "LANTAI 4",
-      "antenna_type": "Antenna Omni",
-      "cables": [
-        {"size": "1/2", "length_m": 10},
-        {"size": "1/2", "length_m": 10}
-      ],
-      "passives": [
-        {"type": "splitter", "ways": 3},
-        {"type": "splitter", "ways": 3}
-      ]
-    }
-  ]
-}
+{"antennas":[{"id":"LT4-AO-1","floor":"LANTAI 4","antenna_type":"Antenna Omni","cables":[{"s":"1/2","m":10}],"passives":[{"t":"splitter","w":3}]}]}
 """
 
 def calculate_link_budget_csv(raw_text):
@@ -99,14 +83,14 @@ def calculate_link_budget_csv(raw_text):
         # 1. Hitung Feeder Loss + Margin Bending 12%
         theo_feeder = 0.0
         for c in item.get("cables", []):
-            raw_size = str(c.get("size", "1/2")).replace('"', '').replace("”", "").strip()
+            raw_size = str(c.get("s", c.get("size", "1/2"))).replace('"', '').replace("”", "").strip()
             if "7/8" in raw_size:
                 size_key = "7/8"
             elif "1/4" in raw_size:
                 size_key = "1 1/4"
             else:
                 size_key = "1/2"
-            length_m = float(c.get("length_m", 0))
+            length_m = float(c.get("m", c.get("length_m", 0)))
             theo_feeder += length_m * FEEDER_DB_PER_M[size_key]
 
         feeder_loss = round(theo_feeder * BENDING_MARGIN, 2)
@@ -117,14 +101,14 @@ def calculate_link_budget_csv(raw_text):
         valid_passive_count = 0
 
         for p in passives:
-            ptype = str(p.get("type", "")).lower().strip()
+            ptype = str(p.get("t", p.get("type", ""))).lower().strip()
             if ptype == "splitter":
-                ways = int(p.get("ways", 2))
+                ways = int(p.get("w", p.get("ways", 2)))
                 splitter_loss += SPLITTER_DB.get(ways, 3.5)
                 valid_passive_count += 1
             elif ptype == "coupler":
-                val = int(p.get("value_db", 6))
-                port = str(p.get("port", "coupled")).lower().strip()
+                val = int(p.get("v", p.get("value_db", 6)))
+                port = str(p.get("p", p.get("port", "coupled"))).lower().strip()
                 if "through" in port or "main" in port:
                     splitter_loss += COUPLER_THROUGH_DB.get(val, 1.5)
                 else:
@@ -155,7 +139,7 @@ def get_available_gemini_models():
         "robotics", "computer-use", "image", "2.0", "2.5"
     ]
     try:
-        resp = requests.get(list_url, timeout=15)
+        resp = requests.get(list_url, timeout=10)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -188,9 +172,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+    img.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -246,8 +230,8 @@ def chat():
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Ekstrak seluruh jalur distribusi mulai dari port output MCM/Combiner menuju setiap titik antena indoor di semua lantai ke dalam JSON sesuai skema di atas.\n"
-            f"Catatan tambahan user: {user_message}"
+            f"Ekstrak seluruh jalur distribusi mulai dari port output MCM/Combiner menuju setiap titik antena indoor di semua lantai ke dalam JSON ringkas.\n"
+            f"Catatan tambahan: {user_message}"
         )
 
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
@@ -257,7 +241,7 @@ def chat():
         raw_text = None
         last_error = None
 
-        for model_name in candidate_models:
+        for model_name in candidate_models[:2]:
             base_host = "generativelanguage.googleapis.com"
             url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -266,7 +250,7 @@ def chat():
                 "generationConfig": {
                     "temperature": 0.1,
                     "responseMimeType": "application/json",
-                    "thinkingConfig": {"thinkingLevel": "HIGH"}
+                    "thinkingConfig": {"thinkingLevel": "MEDIUM"}
                 }
             }
             payload_basic = {
@@ -279,9 +263,9 @@ def chat():
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(4):
+            for attempt in range(2):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=110)
+                    resp = requests.post(url, json=current_payload, timeout=75)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -294,8 +278,8 @@ def chat():
                         }
                         continue
                     elif resp.status_code == 503:
-                        last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(2 * (attempt + 1))
+                        last_error = f"HTTP 503 ({model_name}): Server sibuk."
+                        time.sleep(2)
                         continue
                     else:
                         last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
