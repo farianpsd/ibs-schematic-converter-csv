@@ -19,49 +19,70 @@ def index():
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
-        # Terima gambar dan/atau teks dari obrolan
-        file = request.files.get('file')
+        # Terima banyak gambar sekaligus ('files') atau tunggal ('file') sebagai fallback
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            single_file = request.files.get('file')
+            if single_file and single_file.filename != '':
+                files = [single_file]
+            else:
+                return jsonify({'response': 'Silakan lampirkan gambar skematik IBS yang ingin diekstrak.'})
+
         user_message = request.form.get('message', '')
 
-        if not file:
-            return jsonify({'response': 'Silakan lampirkan gambar skematik IBS yang ingin diekstrak.'})
+        # Buka semua gambar menggunakan PIL
+        image_list = []
+        for f in files:
+            if f.filename != '':
+                image_bytes = f.read()
+                img = Image.open(io.BytesIO(image_bytes))
+                image_list.append(img)
 
-        # Buka gambar menggunakan PIL
-        image_bytes = file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-
-        # Prompt khusus Gemini Vision untuk ekstraksi node IBS
-        prompt = """
+        # Prompt khusus Gemini Vision untuk ekstraksi node IBS multi-gambar
+        prompt = f"""
         Kamu adalah pakar analisis skematik IBS (In-Building System).
-        Analisis gambar skematik ini dan ekstrak SELURUH titik antena distribusi beserta komponen jalurnya secara presisi.
+        Terdapat {len(image_list)} gambar skematik yang merupakan SATU KESATUAN SISTEM dari Repeater yang sama (misalnya jalur dari Lantai 4 bercabang ke Lantai 3 dan Lantai 2).
+        Analisis SEMUA gambar secara bersamaan, lacak sambungan kabel antar gambar (seperti label 'TO LT ...' dan 'FROM LT ...'), dan ekstrak SELURUH titik antena distribusi beserta komponen jalurnya secara presisi dari output Repeater hingga ke ujung antena.
 
         ATURAN EXCLUSION:
-        - Abaikan Antenna Donor (di area luar/kiri) beserta kabel Feeder 7/8".
+        - Abaikan Antenna Donor (di area luar/kiri sebelum Repeater) beserta kabel Feeder 7/8" dari Donor ke Repeater.
+        - PERHATIAN: Kabel Feeder 7/8" atau 1/2" yang menghubungkan antar lantai SETELAH Repeater/MCM (misalnya 'TO LT 3' / 'FROM LT 4') BUKAN kabel donor — WAJIB dihitung ke dalam jalur antena tujuan!
         - Abaikan Title Block, Legenda REMARKS, dan Tabel Approval/Revisi di sisi paling kanan.
 
+        ATURAN IDENTIFIKASI SPLITTER (SANGAT PENTING):
+        - Jangan menebak jenis splitter! Hitung secara teliti jumlah garis kabel/port yang keluar dari sisi kanan simbol splitter merah (mengacu pada legenda REMARKS):
+          * 2 garis/port output = "2-Way"
+          * 3 garis/port output = "3-Way" (Contoh: splitter utama tepat setelah MCM di Lantai 4 memiliki 3 output: 1 kabel hijau ke Lt 4 dan 2 kabel ungu 'TO LT 3')
+          * 4 garis/port output = "4-Way"
+
         INSTRUKSI EKSTRAKSI VISUAL:
-        1. DETEKSI SEMUA ANTENA: Cari SEMUA simbol antena (lingkaran atau segitiga warna Cyan/Biru) di UJUNG KANAN kabel Feeder 1/2".
-        2. Beri kode TITIK_ANTENA berurutan dari paling bawah ke paling atas pada gambar (AO-1, AO-2, AO-3, dst.).
-        3. Identifikasi LANTAI_POSISI dari label teks nama lantai terdekat (misal: LANTAI 1, LANTAI 2, BASEMENT, dsb.).
+        1. DETEKSI SEMUA ANTENA: Cari SEMUA simbol antena (lingkaran atau segitiga warna Cyan/Biru) di UJUNG KANAN kabel distribusi di seluruh gambar.
+        2. Beri kode TITIK_ANTENA sesuai label pada gambar (misal: AO-1, AO-2, AO-3, dst.) atau berurutan dari atas ke bawah per lantai.
+        3. Identifikasi LANTAI_POSISI dari label teks nama lantai pada masing-masing bagian gambar (misal: LANTAI 4, LANTAI 3, LANTAI 2, BASEMENT, dsb.).
         4. TIPE_ANTENA: "Antenna Omni" (lingkaran) atau "Antenna Planar" (segitiga).
-        5. KABEL_LIST: Masukkan seluruh angka panjang kabel Feeder 1/2" (Meter) dari Repeater ke antena tersebut sebagai array angka.
-        6. SPLITTER_LIST: Masukkan seluruh jenis splitter (2-Way, 3-Way, 4-Way, Coupler) dari Repeater ke antena tersebut sebagai array string.
+        5. KABEL_LIST: Masukkan SELURUH angka panjang kabel (Meter) secara berurutan dari output Repeater hingga ke antena tersebut sebagai array angka (termasuk kabel penghubung antar lantai jika berbeda gambar).
+        6. SPLITTER_LIST: Masukkan SELURUH jenis splitter/coupler ("2-Way", "3-Way", "4-Way", "Coupler") yang dilewati sinyal dari output Repeater hingga ke antena tersebut sebagai array string.
+
+        Catatan tambahan dari user: {user_message}
 
         Kembalikan HANYA JSON murni array of objects tanpa format markdown tambahan:
         [
-          {
+          {{
             "TITIK_ANTENA": "AO-1",
-            "LANTAI_POSISI": "LANTAI 1",
+            "LANTAI_POSISI": "LANTAI 4",
             "TIPE_ANTENA": "Antenna Omni",
-            "KABEL_LIST": [20, 15, 30],
-            "SPLITTER_LIST": ["2-Way", "2-Way", "3-Way"]
-          }
+            "KABEL_LIST": [5, 10, 10, 20, 10],
+            "SPLITTER_LIST": ["3-Way", "3-Way", "3-Way"]
+          }}
         ]
         """
 
-        # Panggil Gemini Vision API (gemini-1.5-pro / gemini-2.0-flash)
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        response = model.generate_content([prompt, image])
+        # Gabungkan prompt dan semua gambar ke dalam list contents
+        contents = [prompt] + image_list
+
+        # Panggil Gemini Vision API
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        response = model.generate_content(contents)
         
         # Bersihkan format teks JSON
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
