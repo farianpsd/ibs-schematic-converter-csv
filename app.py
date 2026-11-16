@@ -13,7 +13,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 CACHED_MODELS = []
 
 SYSTEM_INSTRUCTION = """
-Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh titik antena indoor dari skematik multi-lantai menjadi 1 tabel CSV Link Budget per titik antena berdasarkan spesifikasi perangkat pasif RF merek G-WAVE.
+Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh titik antena indoor dari skematik multi-lantai menjadi 1 tabel CSV Link Budget per titik antena berdasarkan spesifikasi perangkat pasif RF merek G-WAVE dan toleransi instalasi lapangan.
 
 ATURAN KELUARAN (STRICT CSV):
 1. WAJIB HANYA MENGELUARKAN TEKS CSV MURNI.
@@ -24,39 +24,43 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
 4. ATURAN PEMFILTERAN & BARIS DATA (HANYA TITIK ANTENA INDOOR):
    - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
    - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
-   - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung (telusuri jalur dari sumber/MCM melewati kabel riser "TO LT X" / "FROM LT Y" sampai ke setiap antena di masing-masing lantai).
-   - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (misal: AO-1, AO-2, atau jika antar-lantai memiliki nomor sama tulis LT4-AO-1, LT3-AO-1 agar unik).
+   - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner melewati seluruh splitter tingkat 1, tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
+   - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
 
-5. STANDAR KALKULASI LOSS PERANGKAT MEREK G-WAVE (END-TO-END PER ANTENA):
-   Telusuri seluruh jalur dari output sumber distribusi (Repeater / MCM) sampai ke masing-masing titik antena, lalu akumulasikan:
-   
-   A. `FEEDER_LOSS_DB` (Total akumulasi loss seluruh kabel feeder yang dilewati menuju antena tersebut):
-      - Feeder 1/2" = Panjang (m) * 0.07 dB/m
-      - Feeder 7/8" = Panjang (m) * 0.04 dB/m
-      - Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
+5. STANDAR KALKULASI LOSS PERANGKAT G-WAVE & MARGIN LAPANGAN (END-TO-END PER ANTENA):
+   Telusuri seluruh jalur dari port output sumber distribusi (MCM / Repeater) sampai ke masing-masing titik antena, lalu hitung:
 
-   B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati di jalur tersebut):
-      - G-Wave Power Splitter 2-Way = 3.5 dB
-      - G-Wave Power Splitter 3-Way = 5.5 dB
-      - G-Wave Power Splitter 4-Way = 6.5 dB
-      - G-Wave Directional Coupler (perhatikan cabang port Coupled/Tap vs Through/Main pada gambar!):
-        * Coupler 5 dB  -> Port Coupled = 5.5 dB | Port Through = 1.8 dB
-        * Coupler 6 dB  -> Port Coupled = 6.5 dB | Port Through = 1.5 dB
-        * Coupler 7 dB  -> Port Coupled = 7.5 dB | Port Through = 1.2 dB
-        * Coupler 10 dB -> Port Coupled = 10.5 dB | Port Through = 0.7 dB
-        * Coupler 15 dB -> Port Coupled = 15.4 dB | Port Through = 0.4 dB
-        * Coupler 20 dB -> Port Coupled = 20.3 dB | Port Through = 0.3 dB
-        * Coupler 30 dB -> Port Coupled = 30.3 dB | Port Through = 0.2 dB
-      - G-Wave Hybrid Combiner / MCM (jika jalur melewati combiner sebelum distribusi) = 3.5 dB
+   A. `FEEDER_LOSS_DB` (Total akumulasi loss kabel feeder + Margin Bending Lapangan 10% - 15%):
+      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut:
+        * Feeder 1/2" = Panjang (m) * 0.07 dB/m
+        * Feeder 7/8" = Panjang (m) * 0.04 dB/m
+        * Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
+      - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12; atau 1.10 untuk riser vertikal lurus dan 1.15 untuk jalur banyak belokan):
+        FEEDER_LOSS_DB = round(Total_Feeder_Loss_Teoritis * 1.12, 2)
 
-   C. `TOTAL_LOSS_DB`:
-      - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + 0.5, 2)
-      - Angka 0.5 dB adalah fixed loss Jumper + Konektor RF per jalur antena. JANGAN dikurangi dengan Antenna Gain.
+   B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM hingga antena tersebut):
+      - Hitung jumlah cabang output pada simbol tiap splitter (JANGAN menyamaratakan semua antena jika jumlah cabangnya berbeda!):
+        * G-Wave Power Splitter 2-Way = 3.5 dB
+        * G-Wave Power Splitter 3-Way = 5.5 dB
+        * G-Wave Power Splitter 4-Way = 6.5 dB
+        * G-Wave Directional Coupler (perhatikan cabang port Coupled/Tap vs Through/Main pada gambar!):
+          - Coupler 5 dB  -> Port Coupled = 5.5 dB | Port Through = 1.8 dB
+          - Coupler 6 dB  -> Port Coupled = 6.5 dB | Port Through = 1.5 dB
+          - Coupler 7 dB  -> Port Coupled = 7.5 dB | Port Through = 1.2 dB
+          - Coupler 10 dB -> Port Coupled = 10.5 dB | Port Through = 0.7 dB
+          - Coupler 15 dB -> Port Coupled = 15.4 dB | Port Through = 0.4 dB
+          - Coupler 20 dB -> Port Coupled = 20.3 dB | Port Through = 0.3 dB
+          - Coupler 30 dB -> Port Coupled = 30.3 dB | Port Through = 0.2 dB
+
+   C. `TOTAL_LOSS_DB` (Termasuk Dynamic Connector Loss + Jumper):
+      - Hitung Connector_Jumper_Loss = (Jumlah perangkat Splitter/Coupler yang dilewati * 0.20 dB) + 0.50 dB (untuk konektor output MCM + jumper & konektor antena).
+      - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + Connector_Jumper_Loss, 2)
+      - JANGAN dikurangi dengan Antenna Gain.
 
 6. ATURAN FORMAT ANGKA & BARIS:
-   - Semua nilai loss wajib berupa satu angka desimal matang (contoh: 3.5, 10.65, 14.85). DILARANG menulis rumus atau tanda tambah.
+   - Semua nilai loss wajib berupa satu angka desimal matang (contoh: 3.92, 16.5, 21.52). DILARANG menulis rumus atau tanda tambah.
    - Setiap titik antena wajib berada pada baris terpisah (dipisah Enter/newline).
    - DILARANG menambahkan teks penjelasan apa pun sebelum atau sesudah CSV.
 """
@@ -106,9 +110,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=82)
+    img.save(buf, format="JPEG", quality=88)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -172,7 +176,7 @@ def chat():
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Telusuri seluruh jalur distribusi dari sumber menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss, Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk +0.5 dB jumper/connector) ke dalam SATU tabel CSV utuh.\n"
+            f"Telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
@@ -191,7 +195,7 @@ def chat():
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "LOW"}
+                    "thinkingConfig": {"thinkingLevel": "HIGH"}
                 }
             }
             payload_basic = {
@@ -203,7 +207,7 @@ def chat():
 
             for attempt in range(4):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=90)
+                    resp = requests.post(url, json=current_payload, timeout=110)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
