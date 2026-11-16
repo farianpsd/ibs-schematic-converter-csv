@@ -58,7 +58,8 @@ def parse_uploaded_images(req):
         for f in uploaded_files:
             if f and f.filename != '':
                 img = Image.open(f.stream).convert("RGB")
-                pil_images.append(img)
+img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+pil_images.append(img)
     elif req.is_json:
         data = req.get_json(silent=True) or {}
         b64_list = data.get('images', [])
