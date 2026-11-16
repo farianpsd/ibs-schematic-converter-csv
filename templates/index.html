@@ -7,13 +7,13 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background-color: #f4f6f9; display: flex; justify-content: center; align-items: center; height: 100vh; padding: 10px; }
-        .chat-container { width: 100%; max-width: 850px; height: 95vh; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
+        .chat-container { width: 100%; max-width: 900px; height: 95vh; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
         .chat-header { background: #0d6efd; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
         .chat-header h2 { font-size: 1.1rem; font-weight: 600; }
         .chat-box { flex: 1; padding: 20px; overflow-y: auto; background-color: #f8f9fa; display: flex; flex-direction: column; gap: 15px; }
-        .message { display: flex; flex-direction: column; max-width: 85%; line-height: 1.4; font-size: 0.95rem; }
+        .message { display: flex; flex-direction: column; max-width: 90%; line-height: 1.4; font-size: 0.95rem; }
         .message.user { align-self: flex-end; background-color: #0d6efd; color: white; border-radius: 15px 15px 0 15px; padding: 10px 15px; }
-        .message.bot { align-self: flex-start; background-color: #ffffff; color: #333; border: 1px solid #e0e0e0; border-radius: 15px 15px 15px 0; padding: 12px 15px; width: 100%; }
+        .message.bot { align-self: flex-start; background-color: #ffffff; color: #333; border: 1px solid #e0e0e0; border-radius: 15px 15px 15px 0; padding: 14px 16px; width: 100%; }
         
         /* Grid gambar di bubble chat user */
         .user-img-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
@@ -37,9 +37,9 @@
         .btn-primary:hover { background: #0b5ed7; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-secondary:hover { background: #5c636a; }
-        .btn-success { background: #198754; color: white; margin-top: 10px; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; padding: 8px 14px; border-radius: 6px; font-size: 0.85rem; }
+        .btn-success { background: #198754; color: white; margin-top: 12px; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-size: 0.9rem; font-weight: 600; width: fit-content; cursor: pointer; border: none; }
         .btn-success:hover { background: #157347; }
-        pre { background: #272822; color: #f8f8f2; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; margin-top: 8px; max-height: 300px; }
+        pre { background: #272822; color: #f8f8f2; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; margin-top: 10px; max-height: 320px; white-space: pre; }
     </style>
 </head>
 <body>
@@ -47,7 +47,7 @@
 <div class="chat-container">
     <div class="chat-header">
         <h2>IBS Link Budget AI Extractor</h2>
-        <span style="font-size: 0.8rem; opacity: 0.85;">Multi-Schematic Mode • Gemini 2.5 Pro</span>
+        <span style="font-size: 0.8rem; opacity: 0.85;">Multi-Schematic Mode • Gemini 3.8 Flash</span>
     </div>
 
     <div class="chat-box" id="chatBox">
@@ -62,11 +62,8 @@
             <span class="clear-all-btn" onclick="clearAllImages()">Hapus Semua</span>
         </div>
         <div class="input-row">
-            <!-- Atribut 'multiple' diaktifkan -->
             <input type="file" id="fileInput" accept="image/*" multiple style="display: none;" onchange="handleFileSelect(event)">
             <button class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">📁 Pilih Gambar</button>
-            
-            <!-- Text Input -->
             <input type="text" id="userInput" placeholder="Tempel gambar (Ctrl+V) atau ketik catatan..." onpaste="handlePaste(event)" onkeypress="if(event.key==='Enter') sendMessage()">
             <button class="btn btn-primary" onclick="sendMessage()">Kirim</button>
         </div>
@@ -74,10 +71,8 @@
 </div>
 
 <script>
-    // Array untuk menyimpan banyak objek File sekaligus
     let selectedFiles = [];
 
-    // Handle Paste (Ctrl+V) berulang kali
     function handlePaste(e) {
         const items = (e.clipboardData || e.originalEvent.clipboardData).items;
         let hasImage = false;
@@ -95,18 +90,15 @@
         }
     }
 
-    // Handle File Selection dari Tombol (bisa pilih banyak sekaligus)
     function handleFileSelect(e) {
         const files = Array.from(e.target.files);
         if (files.length > 0) {
             selectedFiles = selectedFiles.concat(files);
             renderPreviews();
         }
-        // Reset input agar file yang sama bisa dipilih ulang jika perlu
         e.target.value = '';
     }
 
-    // Render thumbnail semua gambar yang siap dikirim
     function renderPreviews() {
         const previewBar = document.getElementById('previewBar');
         const previewList = document.getElementById('previewList');
@@ -145,20 +137,16 @@
         document.getElementById('fileInput').value = '';
     }
 
-    // Fungsi Helper: Mengubah Array of Objects dari app.py menjadi 1 string CSV
-    function convertToCSV(dataArray) {
-        if (!dataArray || dataArray.length === 0) return '';
-        const headers = Object.keys(dataArray[0]);
-        const csvRows = [headers.join(',')];
-
-        for (const row of dataArray) {
-            const values = headers.map(header => {
-                const val = row[header] !== null && row[header] !== undefined ? String(row[header]) : '';
-                return `"${val.replace(/"/g, '""')}"`;
-            });
-            csvRows.push(values.join(','));
-        }
-        return csvRows.join('\n');
+    function downloadCSVFile(csvContent, filename) {
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     }
 
     async function sendMessage() {
@@ -199,7 +187,7 @@
         // 2. Siapkan FormData untuk dikirim ke /chat di app.py
         const formData = new FormData();
         selectedFiles.forEach(file => {
-            formData.append('files', file); // Sesuai dengan request.files.getlist('files') di app.py
+            formData.append('files', file);
         });
         formData.append('message', text);
 
@@ -222,29 +210,28 @@
             });
             const result = await response.json();
 
-            if (result.success && result.data) {
-                const csvData = convertToCSV(result.data);
+            if (result.status === 'success' && result.csv) {
+                const csvData = result.csv.trim();
+                const lines = csvData.split('\n').filter(line => line.trim() !== '');
+                const rowCount = Math.max(0, lines.length - 1);
 
                 botLoadingDiv.innerHTML = `
-                    <b>✅ Berhasil mengekstrak ${result.count} titik antena menjadi 1 file CSV:</b>
+                    <b>✅ Berhasil mengekstrak ${rowCount} segmen jalur dari${result.image_count || 1} skematik menjadi 1 file CSV:</b>
                     <pre>${escapeHtml(csvData)}</pre>
                 `;
 
-                // Tambah tombol download 1 file CSV gabungan
-                const downloadBtn = document.createElement('a');
+                const downloadBtn = document.createElement('button');
                 downloadBtn.className = 'btn-success';
-                downloadBtn.innerHTML = `📥 Download CSV Gabungan (${result.count} Node)`;
-                downloadBtn.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvData);
-                downloadBtn.download = 'ibs_combined_link_budget.csv';
+                downloadBtn.innerHTML = `📥 Download CSV Gabungan (${rowCount} Baris)`;
+                downloadBtn.onclick = () => downloadCSVFile(csvData, 'ibs_combined_link_budget.csv');
                 botLoadingDiv.appendChild(downloadBtn);
 
-            } else if (result.response) {
-                botLoadingDiv.innerHTML = escapeHtml(result.response);
             } else {
-                botLoadingDiv.innerHTML = `<span style="color:red;">Error: ${escapeHtml(result.error || 'Gagal memproses gambar.')}</span>`;
+                const errText = result.message || result.response || result.error || 'Gagal memproses gambar.';
+                botLoadingDiv.innerHTML = `<span style="color:#dc3545; font-weight:600;">❌ ${escapeHtml(errText)}</span>`;
             }
         } catch (err) {
-            botLoadingDiv.innerHTML = `<span style="color:red;">Terjadi kesalahan koneksi atau timeout server: ${escapeHtml(err.message)}</span>`;
+            botLoadingDiv.innerHTML = `<span style="color:#dc3545; font-weight:600;">❌ Terjadi kesalahan koneksi atau timeout server: ${escapeHtml(err.message)}</span>`;
         }
         chatBox.scrollTop = chatBox.scrollHeight;
     }
