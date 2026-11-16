@@ -117,7 +117,7 @@ def chat():
             f"Catatan tambahan user: {user_message}"
         )
 
-     contents = [*images, prompt_text]
+        contents = [*images, prompt_text]
         candidate_models = ['gemini-3.8-flash', 'gemini-2.5-flash']
         response = None
         last_error = None
