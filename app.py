@@ -116,17 +116,8 @@ def chat():
             f"Catatan tambahan user: {user_message}"
         )
 
-        contents = [*images, prompt_text]
-        candidate_models = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash']
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    clean_name = m.name.replace('models/', '')
-                    if clean_name not in candidate_models:
-                        candidate_models.append(clean_name)
-        except Exception:
-            pass
-
+     contents = [*images, prompt_text]
+        candidate_models = ['gemini-3.8-flash', 'gemini-2.5-flash']
         response = None
         last_error = None
 
