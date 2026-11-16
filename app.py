@@ -53,6 +53,10 @@ def get_available_gemini_models():
 
     base_host = "generativelanguage.googleapis.com"
     list_url = f"https://{base_host}/v1beta/models?key={GEMINI_API_KEY}"
+    blacklist = [
+        "embedding", "aqa", "imagen", "veo", "tts", "audio",
+        "robotics", "computer-use", "image", "2.0", "2.5"
+    ]
     try:
         resp = requests.get(list_url, timeout=15)
         if resp.status_code == 200:
@@ -62,33 +66,34 @@ def get_available_gemini_models():
                 methods = m.get("supportedGenerationMethods", [])
                 name = m.get("name", "").replace("models/", "")
                 if "generateContent" in methods and "gemini" in name:
-                    if not any(x in name for x in ["embedding", "aqa", "imagen", "veo", "tts", "audio", "robotics", "computer-use"]):
+                    if not any(bad in name for bad in blacklist):
                         valid_names.append(name)
 
-            # Prioritaskan gemini-3.8-flash, lalu flash lainnya, lalu pro
             def model_priority(n):
                 if n == "gemini-3.8-flash":
                     return 0
-                if "flash" in n and "lite" not in n:
+                if n == "gemini-flash-latest":
                     return 1
-                if "flash" in n:
+                if "3." in n and "flash" in n:
                     return 2
-                return 3
+                if "pro" in n:
+                    return 3
+                return 4
 
             valid_names.sort(key=model_priority)
             if valid_names:
-                CACHED_MODELS = valid_names[:4]
+                CACHED_MODELS = valid_names
                 return CACHED_MODELS
     except Exception:
         pass
 
-    return ["gemini-3.8-flash"]
+    return ["gemini-3.8-flash", "gemini-flash-latest", "gemini-pro-latest"]
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
     img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=70)
+    img.save(buf, format="JPEG", quality=75)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -184,7 +189,7 @@ def chat():
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(3):
+            for attempt in range(4):
                 try:
                     resp = requests.post(url, json=current_payload, timeout=90)
                     if resp.status_code == 200:
@@ -193,12 +198,11 @@ def chat():
                         if raw_text:
                             break
                     elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                        # Jika model tertentu tidak menerima thinkingConfig, kirim ulang tanpa thinkingConfig
                         current_payload = payload_basic
                         continue
                     elif resp.status_code == 503:
-                        last_error = f"HTTP 503 ({model_name}): Server Gemini sedang sibuk."
-                        time.sleep(3 * (attempt + 1))
+                        last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
+                        time.sleep(2 * (attempt + 1))
                         continue
                     else:
                         last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
