@@ -141,10 +141,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # Resolusi tinggi 2200px agar angka panjang kabel & garis sejajar terbaca tajam
-    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+    img.thumbnail((1750, 1750), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -268,7 +267,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": "HIGH"}
+                "thinkingConfig": {"thinkingLevel": "LOW"}
             }
         }
         payload_basic = {
@@ -283,8 +282,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
 
         for attempt in range(2):
             try:
-                # 1 gambar per request, aman di bawah batas gateway PythonAnywhere
-                resp = requests.post(url, json=current_payload, timeout=75)
+                resp = requests.post(url, json=current_payload, timeout=45)
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -295,7 +293,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
                     continue
                 elif resp.status_code in (429, 503):
                     last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
-                    time.sleep(3)
+                    time.sleep(2)
                     continue
                 else:
                     last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
@@ -321,7 +319,7 @@ def chat():
         cleanup_old_jobs()
         b64_images = parse_uploaded_images(request)
         if not b64_images:
-            msg = 'Silakan unggah atau tempel (Ctrl+V) 1 atau lebih gambar skematik IBS terlebih dahulu.'
+            msg = 'Silakan unggah 1 atau lebih gambar skematik IBS terlebih dahulu.'
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
 
         user_message = (
@@ -382,7 +380,6 @@ def job_status(job_id):
             'response': state.get("message", "Terjadi kesalahan")
         })
 
-    # Proses tepat 1 gambar per panggilan polling agar tidak pernah menyentuh batas timeout PythonAnywhere
     idx = state["current_index"]
     total = state["total_images"]
     jdir = get_job_dir(job_id)
