@@ -122,7 +122,7 @@ def chat():
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
         parts.append({"text": prompt_text})
 
-        candidate_models = ['gemini-3.8-flash', 'gemini-2.5-flash']
+        candidate_models = ['gemini-3.8-flash']
         raw_text = None
         last_error = None
 
@@ -132,19 +132,18 @@ def chat():
             payload = {
                 "contents": [{"parts": parts}],
                 "generationConfig": {
-                    "temperature": 0.1,
-                    "thinkingConfig": {"thinkingBudget": 0}
+                    "temperature": 0.1
                 }
             }
             try:
-                resp = requests.post(url, json=payload, timeout=45)
+                resp = requests.post(url, json=payload, timeout=60)
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                     if raw_text:
                         break
                 else:
-                    last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
             except Exception as err:
                 last_error = str(err)
                 continue
