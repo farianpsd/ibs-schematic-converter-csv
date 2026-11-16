@@ -2,15 +2,15 @@ import os
 import io
 import base64
 from flask import Flask, render_template, request, jsonify
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from PIL import Image
 
 app = Flask(__name__)
 
-# Membaca API Key AQ.Ab8... dari Environment Variable di file WSGI PythonAnywhere
+# Membaca key AQ.Ab8... dari file WSGI PythonAnywhere
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
@@ -93,8 +93,8 @@ def index():
 @app.route('/api/chat', methods=['POST'])
 def chat():
     try:
-        if not client:
-            msg = "GEMINI_API_KEY belum diset di environment server PythonAnywhere."
+        if not GEMINI_API_KEY:
+            msg = "GEMINI_API_KEY belum diset di file WSGI PythonAnywhere."
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 500
 
         images = parse_uploaded_images(request)
@@ -109,27 +109,21 @@ def chat():
         )
 
         prompt_text = (
+            f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(images)} gambar skematik IBS yang saling terhubung. "
             f"Ekstrak seluruh jalur, panjang kabel, splitter, loss, dan gain antena dari semua gambar tersebut menjadi SATU tabel CSV utuh.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
         contents = [*images, prompt_text]
-        # Model yang didukung Vertex AI Express Mode (AQ.Ab8...)
         candidate_models = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']
         response = None
         last_error = None
 
         for model_name in candidate_models:
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION,
-                        temperature=0.1,
-                    )
-                )
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(contents)
                 if response and response.text:
                     break
             except Exception as err:
