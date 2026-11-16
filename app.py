@@ -23,24 +23,25 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
 
 4. ATURAN PEMFILTERAN & BARIS DATA (HANYA TITIK ANTENA INDOOR):
    - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
-   - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
-   - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner melewati seluruh splitter tingkat 1, tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
+   - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner/HC, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
+   - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner/HC melewati segmen kabel awal, seluruh splitter tingkat 1 (pembagi antar-lantai), splitter tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
    - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
 
 5. STANDAR KALKULASI LOSS PERANGKAT G-WAVE & MARGIN LAPANGAN (END-TO-END PER ANTENA):
-   Telusuri seluruh jalur dari port output sumber distribusi (MCM / Repeater) sampai ke masing-masing titik antena, lalu hitung:
+   - TITIK AWAL PENELUSURAN (WAJIB): Mulai hitung segmen kabel pertama tepat setelah port output sumber utama (MCM/Combiner/HC atau Repeater) dan splitter percabangan utama pertama yang membagi jalur ke masing-masing lantai. Jangan melewatkan kabel awal maupun splitter pertama setelah output MCM/Combiner/HC.
 
    A. `FEEDER_LOSS_DB` (Total akumulasi loss kabel feeder + Margin Bending Lapangan 10% - 15%):
-      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut:
+      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM/Combiner/HC hingga antena tersebut (termasuk segmen feeder awal menuju splitter pertama):
         * Feeder 1/2" = Panjang (m) * 0.07 dB/m
         * Feeder 7/8" = Panjang (m) * 0.04 dB/m
         * Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
       - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12; atau 1.10 untuk riser vertikal lurus dan 1.15 untuk jalur banyak belokan):
         FEEDER_LOSS_DB = round(Total_Feeder_Loss_Teoritis * 1.12, 2)
 
-   B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM hingga antena tersebut):
+   B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM/Combiner/HC hingga antena tersebut):
+      - Hitung mulai dari splitter percabangan pertama setelah output MCM/Combiner/HC (jangan masukkan insertion loss internal MCM/Combiner/HC, tetapi wajib hitung splitter pertama yang membagi cabang antar-lantai).
       - Hitung jumlah cabang output pada simbol tiap splitter (JANGAN menyamaratakan semua antena jika jumlah cabangnya berbeda!):
         * G-Wave Power Splitter 2-Way = 3.5 dB
         * G-Wave Power Splitter 3-Way = 5.5 dB
@@ -55,7 +56,7 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
           - Coupler 30 dB -> Port Coupled = 30.3 dB | Port Through = 0.2 dB
 
    C. `TOTAL_LOSS_DB` (Termasuk Dynamic Connector Loss + Jumper):
-      - Hitung Connector_Jumper_Loss = (Jumlah perangkat Splitter/Coupler yang dilewati * 0.20 dB) + 0.50 dB (untuk konektor output MCM + jumper & konektor antena).
+      - Hitung Connector_Jumper_Loss = (Jumlah perangkat Splitter/Coupler yang dilewati mulai dari splitter pertama * 0.20 dB) + 0.50 dB (untuk konektor output MCM/Combiner/HC + jumper & konektor antena).
       - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + Connector_Jumper_Loss, 2)
       - JANGAN dikurangi dengan Antenna Gain.
 
