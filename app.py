@@ -6,9 +6,15 @@ import time
 import uuid
 import base64
 import shutil
+import threading
 import requests
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
+
+try:
+    import fitz  # PyMuPDF untuk merender halaman PDF ke gambar
+except ImportError:
+    fitz = None
 
 app = Flask(__name__)
 
@@ -82,6 +88,12 @@ def get_job_dir(job_id):
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)
     return os.path.join(JOB_BASE_DIR, safe_id)
 
+def remove_job_dir(job_id):
+    try:
+        shutil.rmtree(get_job_dir(job_id), ignore_errors=True)
+    except Exception:
+        pass
+
 def load_job_state(job_id):
     state_file = os.path.join(get_job_dir(job_id), "state.json")
     if not os.path.exists(state_file):
@@ -110,7 +122,7 @@ def get_available_gemini_models():
         "robotics", "computer-use", "image", "2.0", "2.5", "lite"
     ]
     try:
-        resp = requests.get(list_url, timeout=10)
+        resp = requests.get(list_url, timeout=15)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -122,30 +134,49 @@ def get_available_gemini_models():
                         valid_names.append(name)
 
             def model_priority(n):
-                if n == "gemini-flash-latest":
+                if "3.5-flash" in n:
                     return 0
                 if "3." in n and "flash" in n:
                     return 1
-                if "pro" in n:
+                if n == "gemini-flash-latest":
                     return 2
-                return 3
+                if "pro" in n:
+                    return 3
+                return 4
 
             valid_names.sort(key=model_priority)
             if valid_names:
-                CACHED_MODELS = valid_names[:2]
+                CACHED_MODELS = valid_names
                 return CACHED_MODELS
     except Exception:
         pass
 
-    return ["gemini-flash-latest", "gemini-pro-latest"]
+    return ["gemini-3.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # 2050px + quality 88: tajam untuk garis splitter & cepat diproses di bawah batas gateway
-    img.thumbnail((2050, 2050), Image.Resampling.LANCZOS)
+    # Resolusi penuh 2400px + quality 92 agar garis splitter & angka kecil terbaca sangat jelas
+    img.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=92)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+def pdf_bytes_to_b64_images(pdf_bytes):
+    if fitz is None:
+        raise RuntimeError(
+            "Pustaka 'pymupdf' belum terpasang di server. "
+            "Jalankan 'pip install --user pymupdf' di Bash console PythonAnywhere."
+        )
+    images_b64 = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            pix = page.get_pixmap(dpi=220, alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images_b64.append(encode_image_jpeg_b64(img))
+    finally:
+        doc.close()
+    return images_b64
 
 def parse_uploaded_images(req):
     b64_images = []
@@ -156,7 +187,13 @@ def parse_uploaded_images(req):
             if single and single.filename != '':
                 uploaded_files = [single]
         for f in uploaded_files:
-            if f and f.filename != '':
+            if not f or f.filename == '':
+                continue
+            fname = f.filename.lower()
+            mimetype = (f.mimetype or '').lower()
+            if fname.endswith('.pdf') or mimetype == 'application/pdf':
+                b64_images.extend(pdf_bytes_to_b64_images(f.read()))
+            else:
                 img = Image.open(f.stream)
                 b64_images.append(encode_image_jpeg_b64(img))
     elif req.is_json:
@@ -167,11 +204,15 @@ def parse_uploaded_images(req):
         for b64_str in b64_list:
             if not b64_str:
                 continue
+            is_pdf_header = "application/pdf" in b64_str[:50].lower()
             if "," in b64_str:
                 b64_str = b64_str.split(",", 1)[1]
-            img_bytes = base64.b64decode(b64_str)
-            img = Image.open(io.BytesIO(img_bytes))
-            b64_images.append(encode_image_jpeg_b64(img))
+            raw_bytes = base64.b64decode(b64_str)
+            if is_pdf_header or raw_bytes[:4] == b"%PDF":
+                b64_images.extend(pdf_bytes_to_b64_images(raw_bytes))
+            else:
+                img = Image.open(io.BytesIO(raw_bytes))
+                b64_images.append(encode_image_jpeg_b64(img))
     return b64_images
 
 def parse_json_payload(raw_text):
@@ -226,17 +267,11 @@ def calculate_rf_csv_from_antennas(items):
 
     return "\n".join(rows)
 
-def call_gemini_step_safe(parts, step_label):
+def call_gemini_high_precision(parts, step_label):
     candidate_models = get_available_gemini_models()
     last_error = None
-    step_start = time.time()
 
     for model_name in candidate_models:
-        elapsed = time.time() - step_start
-        # Jaga total waktu 1 panggilan polling tidak pernah melewati 75 detik agar bebas HTTP 502 PythonAnywhere
-        if elapsed > 50:
-            break
-
         base_host = "generativelanguage.googleapis.com"
         url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -245,7 +280,7 @@ def call_gemini_step_safe(parts, step_label):
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": "MEDIUM"}
+                "thinkingConfig": {"thinkingLevel": "HIGH"}
             }
         }
         payload_basic = {
@@ -257,25 +292,29 @@ def call_gemini_step_safe(parts, step_label):
         }
 
         current_payload = payload_with_thinking if "3." in model_name else payload_basic
-        req_timeout = min(42, max(20, int(72 - elapsed)))
 
-        try:
-            resp = requests.post(url, json=current_payload, timeout=req_timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                if raw_text:
-                    return parse_json_payload(raw_text)
-            elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                resp2 = requests.post(url, json=payload_basic, timeout=req_timeout)
-                if resp2.status_code == 200:
-                    raw_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"]
+        for attempt in range(3):
+            try:
+                # Timeout 240 detik (4 menit) per panggilan di background thread untuk akurasi maksimal
+                resp = requests.post(url, json=current_payload, timeout=240)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                     if raw_text:
                         return parse_json_payload(raw_text)
-            else:
-                last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:220]}"
-        except Exception as err:
-            last_error = f"{model_name}: {str(err)}"
+                elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                    current_payload = payload_basic
+                    continue
+                elif resp.status_code in (429, 503):
+                    last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
+                    time.sleep(5)
+                    continue
+                else:
+                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:220]}"
+                    break
+            except Exception as err:
+                last_error = f"{model_name}: {str(err)}"
+                time.sleep(2)
 
     raise Exception(f"Gagal pada {step_label}: {last_error}")
 
@@ -308,7 +347,7 @@ def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": prompt_text}
     ]
-    return call_gemini_step_safe(parts, f"Ekstraksi Gambar {img_idx + 1}")
+    return call_gemini_high_precision(parts, f"Ekstraksi Gambar {img_idx + 1}")
 
 def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
     audit_prompt = (
@@ -327,7 +366,67 @@ def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": audit_prompt}
     ]
-    return call_gemini_step_safe(parts, f"Audit Gambar {img_idx + 1}")
+    return call_gemini_high_precision(parts, f"Audit Gambar {img_idx + 1}")
+
+def process_job_in_background(job_id):
+    jdir = get_job_dir(job_id)
+    try:
+        state = load_job_state(job_id)
+        if not state:
+            return
+
+        total = state["total_images"]
+        user_message = state.get("user_message", "")
+        antennas = []
+        risers = []
+
+        for idx in range(total):
+            img_path = os.path.join(jdir, f"img_{idx}.b64")
+            with open(img_path, "r", encoding="utf-8") as f:
+                b64_img = f.read()
+
+            state["step"] = f"Tahap 1/2: Ekstraksi mendalam halaman {idx + 1}/{total}..."
+            save_job_state(job_id, state)
+
+            draft = run_extract_pass(
+                b64_img=b64_img,
+                img_idx=idx,
+                total_images=total,
+                riser_context=risers,
+                user_message=user_message
+            )
+
+            state["step"] = f"Tahap 2/2: Mengaudit cabang splitter & kabel halaman {idx + 1}/{total}..."
+            save_job_state(job_id, state)
+
+            verified = run_audit_pass(
+                b64_img=b64_img,
+                img_idx=idx,
+                draft_payload=draft or {},
+                riser_context=risers
+            )
+
+            if os.path.exists(img_path):
+                os.remove(img_path)
+
+            antennas.extend(verified.get("antennas", []))
+            if verified.get("risers"):
+                risers.extend(verified.get("risers", []))
+
+        if not antennas:
+            raise Exception("Tidak ada titik antena indoor yang terbaca dari dokumen.")
+
+        csv_result = calculate_rf_csv_from_antennas(antennas)
+        state["status"] = "done"
+        state["csv"] = csv_result
+        state["step"] = "Selesai!"
+        save_job_state(job_id, state)
+
+    except Exception as e:
+        state = load_job_state(job_id) or {}
+        state["status"] = "error"
+        state["message"] = f"Error: {str(e)}"
+        save_job_state(job_id, state)
 
 @app.route('/')
 def index():
@@ -344,7 +443,7 @@ def chat():
         cleanup_old_jobs()
         b64_images = parse_uploaded_images(request)
         if not b64_images:
-            msg = 'Silakan unggah 1 atau lebih gambar skematik IBS terlebih dahulu.'
+            msg = 'Silakan unggah 1 atau lebih gambar / file PDF skematik IBS terlebih dahulu.'
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
 
         user_message = (
@@ -364,15 +463,13 @@ def chat():
         state = {
             "status": "processing",
             "total_images": len(b64_images),
-            "current_index": 0,
-            "sub_phase": "extract",
-            "draft_payload": None,
             "user_message": user_message,
-            "antennas": [],
-            "risers": [],
-            "step": f"Gambar tersimpan. Tahap 1: Ekstraksi topologi gambar 1/{len(b64_images)}..."
+            "step": f"Dokumen tersimpan (resolusi penuh). Memulai ekstraksi halaman 1/{len(b64_images)}..."
         }
         save_job_state(job_id, state)
+
+        worker = threading.Thread(target=process_job_in_background, args=(job_id,), daemon=True)
+        worker.start()
 
         return jsonify({
             'status': 'processing',
@@ -392,6 +489,7 @@ def job_status(job_id):
 
     if state["status"] == "done":
         csv_data = state["csv"]
+        remove_job_dir(job_id)
         return jsonify({
             'status': 'success',
             'image_count': state["total_images"],
@@ -401,88 +499,18 @@ def job_status(job_id):
         })
 
     if state["status"] == "error":
-        return jsonify({
-            'status': 'error',
-            'message': state.get("message", "Terjadi kesalahan"),
-            'response': state.get("message", "Terjadi kesalahan")
-        })
-
-    idx = state["current_index"]
-    total = state["total_images"]
-    sub_phase = state.get("sub_phase", "extract")
-    jdir = get_job_dir(job_id)
-    img_path = os.path.join(jdir, f"img_{idx}.b64")
-
-    try:
-        with open(img_path, "r", encoding="utf-8") as f:
-            b64_img = f.read()
-
-        if sub_phase == "extract":
-            draft = run_extract_pass(
-                b64_img=b64_img,
-                img_idx=idx,
-                total_images=total,
-                riser_context=state.get("risers", []),
-                user_message=state.get("user_message", "")
-            )
-            state["draft_payload"] = draft
-            state["sub_phase"] = "audit"
-            state["step"] = f"Ekstraksi gambar {idx + 1}/{total} selesai. Mengaudit cabang splitter & panjang kabel..."
-            save_job_state(job_id, state)
-            return jsonify({
-                'status': 'processing',
-                'step': state["step"]
-            })
-
-        else:
-            verified = run_audit_pass(
-                b64_img=b64_img,
-                img_idx=idx,
-                draft_payload=state.get("draft_payload") or {},
-                riser_context=state.get("risers", [])
-            )
-
-            state["antennas"].extend(verified.get("antennas", []))
-            if verified.get("risers"):
-                state["risers"].extend(verified.get("risers", []))
-
-            state["current_index"] = idx + 1
-            state["sub_phase"] = "extract"
-            state["draft_payload"] = None
-
-            if state["current_index"] >= total:
-                if not state["antennas"]:
-                    raise Exception("Tidak ada titik antena indoor yang terbaca dari gambar.")
-                csv_result = calculate_rf_csv_from_antennas(state["antennas"])
-                state["status"] = "done"
-                state["csv"] = csv_result
-                save_job_state(job_id, state)
-
-                return jsonify({
-                    'status': 'success',
-                    'image_count': total,
-                    'csv': csv_result,
-                    'reply': csv_result,
-                    'response': csv_result
-                })
-            else:
-                state["step"] = f"Audit gambar {idx + 1}/{total} selesai. Mengekstrak gambar {idx + 2}/{total}..."
-                save_job_state(job_id, state)
-                return jsonify({
-                    'status': 'processing',
-                    'step': state["step"]
-                })
-
-    except Exception as e:
-        err_msg = f"Error: {str(e)}"
-        state["status"] = "error"
-        state["message"] = err_msg
-        save_job_state(job_id, state)
+        err_msg = state.get("message", "Terjadi kesalahan")
+        remove_job_dir(job_id)
         return jsonify({
             'status': 'error',
             'message': err_msg,
             'response': err_msg
         })
+
+    return jsonify({
+        'status': 'processing',
+        'step': state.get("step", "Sedang memproses...")
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
