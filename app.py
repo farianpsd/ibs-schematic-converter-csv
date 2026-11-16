@@ -127,7 +127,8 @@ def chat():
         last_error = None
 
         for model_name in candidate_models:
-            url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={GEMINI_API_KEY}"
+            base_host = "generativelanguage.googleapis.com"
+            url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
             payload = {
                 "contents": [{"parts": parts}],
                 "generationConfig": {
