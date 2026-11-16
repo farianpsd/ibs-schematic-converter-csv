@@ -25,6 +25,7 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
    - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner/HC, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
    - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner/HC melewati segmen kabel awal, seluruh splitter tingkat 1 (pembagi antar-lantai), splitter tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
+   - WAJIB HITUNG INDIVIDUAL PER TITIK ANTENA: Panjang kabel tiap cabang antena berbeda-beda; DILARANG menyamaratakan nilai FEEDER_LOSS_DB, SPLITTER_LOSS_DB, atau TOTAL_LOSS_DB ke seluruh antena dalam satu lantai.
    - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
@@ -75,10 +76,10 @@ def get_available_gemini_models():
     list_url = f"https://{base_host}/v1beta/models?key={GEMINI_API_KEY}"
     blacklist = [
         "embedding", "aqa", "imagen", "veo", "tts", "audio",
-        "robotics", "computer-use", "image", "2.0", "2.5"
+        "robotics", "computer-use", "image", "2.0", "2.5", "lite"
     ]
     try:
-        resp = requests.get(list_url, timeout=15)
+        resp = requests.get(list_url, timeout=10)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -92,9 +93,9 @@ def get_available_gemini_models():
             def model_priority(n):
                 if n == "gemini-3.8-flash":
                     return 0
-                if n == "gemini-flash-latest":
-                    return 1
                 if "3." in n and "flash" in n:
+                    return 1
+                if n == "gemini-flash-latest":
                     return 2
                 if "pro" in n:
                     return 3
@@ -111,9 +112,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -177,7 +178,7 @@ def chat():
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh.\n"
+            f"Telusuri seluruh jalur distribusi mulai dari output MCM/Combiner/HC (termasuk segmen kabel awal dan splitter pertama) menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
@@ -187,8 +188,12 @@ def chat():
         candidate_models = get_available_gemini_models()
         raw_text = None
         last_error = None
+        start_time = time.time()
 
         for model_name in candidate_models:
+            if time.time() - start_time > 80:
+                break
+
             base_host = "generativelanguage.googleapis.com"
             url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -196,7 +201,7 @@ def chat():
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "HIGH"}
+                    "thinkingConfig": {"thinkingLevel": "MEDIUM"}
                 }
             }
             payload_basic = {
@@ -206,9 +211,9 @@ def chat():
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(4):
+            for attempt in range(2):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=110)
+                    resp = requests.post(url, json=current_payload, timeout=75)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -217,9 +222,15 @@ def chat():
                     elif resp.status_code == 400 and "thinking" in resp.text.lower():
                         current_payload = payload_basic
                         continue
+                    elif resp.status_code == 429:
+                        last_error = f"Kuota API Gemini ({model_name}) sedang penuh sementara (HTTP 429). Tunggu 30-60 detik lalu coba lagi."
+                        if attempt == 0 and (time.time() - start_time < 60):
+                            time.sleep(5)
+                            continue
+                        break
                     elif resp.status_code == 503:
                         last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(2 * (attempt + 1))
+                        time.sleep(2)
                         continue
                     else:
                         last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
