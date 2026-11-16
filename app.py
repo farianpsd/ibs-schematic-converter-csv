@@ -26,6 +26,8 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner/HC, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
    - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner/HC melewati segmen kabel awal, seluruh splitter tingkat 1 (pembagi antar-lantai), splitter tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
    - WAJIB HITUNG INDIVIDUAL PER TITIK ANTENA: Panjang kabel tiap cabang antena berbeda-beda; DILARANG menyamaratakan nilai FEEDER_LOSS_DB, SPLITTER_LOSS_DB, atau TOTAL_LOSS_DB ke seluruh antena dalam satu lantai.
+   - PENCOCOKAN RISER LINTAS GAMBAR: Pastikan setiap label "FROM LT X" pada gambar lantai tujuan dicocokkan persis dengan label "TO LT Y" yang sesuai pada gambar sebelumnya (misal jalur ke Lantai 3 menggunakan riser 30m dan jalur ke Lantai 2 menggunakan riser 40m; jangan tertukar).
+   - TELUSURI CABANG SPLITTER AKHIR SATU PER SATU: Pada lantai dengan beberapa splitter akhir (misal kombinasi 4-Way dan 3-Way secara berurutan), ikuti garis masing-masing antena ke simbol splitternya secara individual—jangan mengelompokkan berdasarkan urutan nomor antena.
    - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
