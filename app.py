@@ -15,22 +15,16 @@ CACHED_MODELS = []
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh titik antena indoor dari skematik multi-lantai menjadi 1 tabel CSV Link Budget per titik antena berdasarkan spesifikasi perangkat pasif RF merek G-WAVE dan toleransi instalasi lapangan.
 
-ATURAN PEMBACAAN AREA GAMBAR (WAJIB DIPATUHI):
-- ABAIKAN ETIKET / TITLE BLOCK DI SISI KANAN GAMBAR: Jangan pernah membaca atau menghitung simbol komponen yang ada di dalam kotak REMARKS / Legenda (seperti contoh simbol ANTENNA DONOR, ANTENNA OMNI, ANTENNA PLANNAR, ANTENNA SECTORAL, COUPLER, SPLITTER 2/3/4 WAY, JUMPER + CONECTOR, tabel COAXIAL, APPROVAL, LOCATION, DRAWING TITTLE, maupun kolom REVISI/SKALA). Hanya baca rangkaian diagram skematik di area gambar utama (sebelah kiri etiket).
-- EKSTRAKSI NAMA SITE: Baca teks nama proyek/gedung/perusahaan yang tertulis di dalam kotak judul tepat di bawah logo perusahaan pada bagian kanan atas etiket (contoh: PT. SAHID PUTRA HARAPAN).
-
-ATURAN KELUARAN (STRICT OUTPUT):
-1. DILARANG KERAS menggunakan simbol Markdown seperti bold (**), backtick (`), atau pagar (#) di mana pun.
-2. BARIS PERTAMA WAJIB MENULISKAN NAMA SITE DENGAN FORMAT EXACT SEPERTI INI:
-SITE_NAME: <NAMA_SITE_DARI_KOTAK_JUDUL_ETIKET>
-3. BARIS KEDUA (HEADER CSV) WAJIB EXACT SAMA SEPERTI INI:
+ATURAN KELUARAN (STRICT CSV):
+1. WAJIB HANYA MENGELUARKAN TEKS CSV MURNI.
+2. DILARANG KERAS menggunakan simbol Markdown seperti bold (**), backtick (`), atau pagar (#) di mana pun.
+3. BARIS PERTAMA (HEADER) WAJIB EXACT SAMA SEPERTI INI:
 TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB
 
 4. ATURAN PEMFILTERAN & BARIS DATA (HANYA TITIK ANTENA INDOOR):
-   - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.) yang terhubung di dalam rangkaian skematik utama.
-   - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), Antenna Donor, maupun simbol legenda di dalam etiket REMARKS.
+   - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
+   - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
    - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output MCM/Combiner melewati seluruh splitter tingkat 1, tingkat 2, kabel riser "TO LT X" / "FROM LT Y", hingga ke setiap titik antena di masing-masing lantai.
-   - WAJIB HITUNG INDIVIDUAL PER TITIK ANTENA: Panjang kabel tiap cabang antena berbeda-beda; DILARANG menyamaratakan nilai FEEDER_LOSS_DB, SPLITTER_LOSS_DB, atau TOTAL_LOSS_DB ke seluruh antena dalam satu lantai.
    - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (jika antar-lantai memiliki nomor sama, wajib gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 agar unik).
    - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
    - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
@@ -39,16 +33,15 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    Telusuri seluruh jalur dari port output sumber distribusi (MCM / Repeater) sampai ke masing-masing titik antena, lalu hitung:
 
    A. `FEEDER_LOSS_DB` (Total akumulasi loss kabel feeder + Margin Bending Lapangan 10% - 15%):
-      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut (bedakan dengan teliti ukuran kabel tiap segmen, khususnya kabel riser antar-lantai 7/8" vs kabel distribusi 1/2"):
+      - Hitung dulu loss teoritis seluruh segmen kabel yang dilewati dari output MCM hingga antena tersebut:
         * Feeder 1/2" = Panjang (m) * 0.07 dB/m
         * Feeder 7/8" = Panjang (m) * 0.04 dB/m
         * Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
-      - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12):
+      - Terapkan Margin Bending & Routing Lapangan sebesar +12% (pengali 1.12; atau 1.10 untuk riser vertikal lurus dan 1.15 untuk jalur banyak belokan):
         FEEDER_LOSS_DB = round(Total_Feeder_Loss_Teoritis * 1.12, 2)
 
    B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM hingga antena tersebut):
-      - KONSISTENSI MCM: JANGAN masukkan loss MCM (3.5 dB) ke dalam SPLITTER_LOSS_DB (mulai hitung splitter dari splitter pertama setelah port output MCM secara konsisten untuk seluruh lantai).
-      - PENGHITUNGAN PORT SPLITTER DINAMIS: Tentukan jenis splitter dengan menghitung TOTAL seluruh jalur kabel yang keluar dari sisi output komponen tersebut (baik yang mengarah horizontal ke antena/cabang maupun yang turun/naik vertikal sebagai kabel riser sejajar). Jangan mengabaikan garis riser yang digambar berdekatan/sejajar, dan jangan menyamaratakan nilai antar-antena jika jumlah cabang outputnya berbeda:
+      - Hitung jumlah cabang output pada simbol tiap splitter (JANGAN menyamaratakan semua antena jika jumlah cabangnya berbeda!):
         * G-Wave Power Splitter 2-Way = 3.5 dB
         * G-Wave Power Splitter 3-Way = 5.5 dB
         * G-Wave Power Splitter 4-Way = 6.5 dB
@@ -64,12 +57,12 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
    C. `TOTAL_LOSS_DB` (Termasuk Dynamic Connector Loss + Jumper):
       - Hitung Connector_Jumper_Loss = (Jumlah perangkat Splitter/Coupler yang dilewati * 0.20 dB) + 0.50 dB (untuk konektor output MCM + jumper & konektor antena).
       - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + Connector_Jumper_Loss, 2)
-      - Pastikan TOTAL_LOSS_DB selalu lebih besar dari (FEEDER_LOSS_DB + SPLITTER_LOSS_DB). JANGAN dikurangi dengan Antenna Gain.
+      - JANGAN dikurangi dengan Antenna Gain.
 
 6. ATURAN FORMAT ANGKA & BARIS:
    - Semua nilai loss wajib berupa satu angka desimal matang (contoh: 3.92, 16.5, 21.52). DILARANG menulis rumus atau tanda tambah.
    - Setiap titik antena wajib berada pada baris terpisah (dipisah Enter/newline).
-   - DILARANG menambahkan teks penjelasan apa pun sebelum baris SITE_NAME atau sesudah baris terakhir CSV.
+   - DILARANG menambahkan teks penjelasan apa pun sebelum atau sesudah CSV.
 """
 
 def get_available_gemini_models():
@@ -81,10 +74,10 @@ def get_available_gemini_models():
     list_url = f"https://{base_host}/v1beta/models?key={GEMINI_API_KEY}"
     blacklist = [
         "embedding", "aqa", "imagen", "veo", "tts", "audio",
-        "robotics", "computer-use", "image", "2.0", "2.5", "lite"
+        "robotics", "computer-use", "image", "2.0", "2.5"
     ]
     try:
-        resp = requests.get(list_url, timeout=10)
+        resp = requests.get(list_url, timeout=15)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -98,9 +91,9 @@ def get_available_gemini_models():
             def model_priority(n):
                 if n == "gemini-3.8-flash":
                     return 0
-                if "3." in n and "flash" in n:
-                    return 1
                 if n == "gemini-flash-latest":
+                    return 1
+                if "3." in n and "flash" in n:
                     return 2
                 if "pro" in n:
                     return 3
@@ -117,9 +110,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=88)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -149,37 +142,13 @@ def parse_uploaded_images(req):
             b64_images.append(encode_image_jpeg_b64(img))
     return b64_images
 
-def sanitize_filename(site_name):
-    clean = re.sub(r"[^A-Za-z0-9\s_-]", "", site_name).strip()
-    clean = re.sub(r"\s+", "_", clean)
-    if not clean or clean.upper() in ("UNKNOWN", "NONE", "NAMA_SITE", "NAMA_SITE_DARI_KOTAK_JUDUL_ETIKET"):
-        return "Link_Budget_IBS.csv"
-    return f"Link_Budget_{clean}.csv"
-
-def parse_site_and_csv(raw_text):
+def clean_csv_output(raw_text):
     text = raw_text.strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-
-    site_name = "IBS_SITE"
-    csv_lines = []
-
-    for line in text.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if s.upper().startswith("SITE_NAME:"):
-            extracted = s.split(":", 1)[1].strip()
-            if extracted:
-                site_name = extracted
-        else:
-            csv_lines.append(s)
-
-    joined_csv = "\n".join(csv_lines)
-    joined_csv = re.sub(r"\s+(?=(?:LT\d+-)?(?:AO|AP)-\d+,)", "\n", joined_csv)
-    final_lines = [line.strip() for line in joined_csv.splitlines() if line.strip()]
-
-    return site_name, sanitize_filename(site_name), "\n".join(final_lines)
+    text = re.sub(r"\s+(?=(?:LT\d+-)?(?:AO|AP)-\d+,)", "\n", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines)
 
 @app.route('/')
 def index():
@@ -195,14 +164,20 @@ def chat():
 
         b64_images = parse_uploaded_images(request)
         if not b64_images:
-            msg = 'Silakan unggah 1 atau lebih gambar skematik IBS terlebih dahulu.'
+            msg = 'Silakan unggah atau tempel (Ctrl+V) 1 atau lebih gambar skematik IBS terlebih dahulu.'
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
+
+        user_message = (
+            request.form.get('message', '')
+            if not request.is_json
+            else (request.get_json(silent=True) or {}).get('message', '')
+        )
 
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Abaikan seluruh kolom etiket/REMARKS di sisi kanan gambar, ambil nama site dari kotak judul di bawah logo kanan atas untuk baris SITE_NAME, "
-            f"lalu telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai secara individual dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh."
+            f"Telusuri seluruh jalur distribusi mulai dari output MCM menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss (+margin bending 12%), Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk dynamic connector & jumper loss) ke dalam SATU tabel CSV utuh.\n"
+            f"Catatan tambahan user: {user_message}"
         )
 
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
@@ -211,12 +186,8 @@ def chat():
         candidate_models = get_available_gemini_models()
         raw_text = None
         last_error = None
-        start_time = time.time()
 
         for model_name in candidate_models:
-            if time.time() - start_time > 85:
-                break
-
             base_host = "generativelanguage.googleapis.com"
             url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -224,7 +195,7 @@ def chat():
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "MEDIUM"}
+                    "thinkingConfig": {"thinkingLevel": "HIGH"}
                 }
             }
             payload_basic = {
@@ -234,9 +205,9 @@ def chat():
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(2):
+            for attempt in range(4):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=75)
+                    resp = requests.post(url, json=current_payload, timeout=110)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -245,15 +216,9 @@ def chat():
                     elif resp.status_code == 400 and "thinking" in resp.text.lower():
                         current_payload = payload_basic
                         continue
-                    elif resp.status_code == 429:
-                        last_error = f"Kuota API Gemini ({model_name}) sedang penuh/limit sementara (HTTP 429). Tunggu 30-60 detik lalu klik Proses kembali."
-                        if attempt == 0 and (time.time() - start_time < 65):
-                            time.sleep(5)
-                            continue
-                        break
                     elif resp.status_code == 503:
                         last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(2)
+                        time.sleep(2 * (attempt + 1))
                         continue
                     else:
                         last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
@@ -266,15 +231,13 @@ def chat():
                 break
 
         if not raw_text:
-            raise Exception(f"{last_error}")
+            raise Exception(f"Detail error: {last_error}")
 
-        site_name, csv_filename, csv_result = parse_site_and_csv(raw_text)
+        csv_result = clean_csv_output(raw_text)
 
         return jsonify({
             'status': 'success',
             'image_count': len(b64_images),
-            'site_name': site_name,
-            'filename': csv_filename,
             'csv': csv_result,
             'reply': csv_result,
             'response': csv_result
