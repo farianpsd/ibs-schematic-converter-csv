@@ -14,44 +14,36 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 CACHED_MODELS = []
 
 SYSTEM_INSTRUCTION = """
-Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas membaca topologi jaringan dari skematik multi-lantai menjadi JSON terstruktur untuk setiap titik antena indoor.
+Kamu adalah Senior RF Engineer IBS (In-Building System) yang membaca topologi jaringan dari skematik multi-lantai menjadi JSON ringkas untuk setiap titik antena indoor.
 
-ATURAN EKSTRAKSI (WAJIB JSON VALID):
-1. HANYA keluarkan JSON murni dengan struktur array berikut (tanpa markdown ```json dan tanpa teks tambahan):
+ATURAN EKSTRAKSI (WAJIB JSON ARRAY VALID):
+1. HANYA keluarkan JSON array murni (tanpa markdown ```json dan tanpa teks lain) dengan format key ringkas berikut:
 [
-  {
-    "titik_antena": "LT4-AO-1",
-    "lantai_posisi": "LANTAI 4",
-    "tipe_antena": "Antenna Omni",
-    "cables": [
-      {"size": "1/2", "length_m": 10},
-      {"size": "1/2", "length_m": 50}
-    ],
-    "devices": ["SPLITTER_3WAY", "SPLITTER_3WAY", "SPLITTER_3WAY"]
-  }
+  {"a":"LT4-AO-1","f":"LANTAI 4","t":"Antenna Omni","c":[["1/2",10],["1/2",50]],"d":["S3","S3","S3"]}
 ]
 
-2. ATURAN PEMFILTERAN & PENELUSURAN JALUR (END-TO-END PER ANTENA):
-   - HANYA ekstrak titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.). DILARANG memasukkan Repeater, MCM/Combiner/HC, Splitter, Coupler, kabel riser (TO LT / FROM LT), maupun Antenna Donor sebagai baris antena.
-   - Gabungkan semua gambar skematik menjadi SATU sistem terhubung. Telusuri jalur MULAI DARI port output sumber utama (MCM/Combiner/HC atau Repeater) sampai ke masing-masing antena:
-     * TITIK AWAL (WAJIB): Sertakan segmen kabel pertama tepat setelah output MCM/Combiner/HC (misal 1/2" 10m) dan splitter percabangan utama pertama yang membagi jalur ke tiap lantai (perhatikan dengan teliti jika ada 2 garis riser sejajar turun ke lantai berbeda -> total 3 cabang = SPLITTER_3WAY).
-     * PENCOCOKAN RISER LINTAS GAMBAR: Cocokkan label "FROM LT X" dengan label "TO LT X" yang sesuai pada gambar sebelumnya (misal ke Lantai 3 memakai riser 7/8" 30m dan ke Lantai 2 memakai riser 7/8" 40m; JANGAN tertukar antar-lantai).
-     * TELUSURI CABANG AKHIR SATU PER SATU: Pada lantai dengan beberapa splitter akhir (misal kombinasi 4-Way dan 3-Way secara berurutan), ikuti garis masing-masing antena ke simbol splitternya secara individual.
-   - `titik_antena`: gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 jika nomor antena berulang antar-lantai.
-   - `lantai_posisi`: huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2).
-   - `tipe_antena`: tulis rapi (contoh: Antenna Omni, Antenna Planar).
-   - `cables`: daftar seluruh segmen kabel yang dilewati dari output MCM/Combiner/HC hingga antena tersebut. Nilai `size` hanya boleh: "1/2", "7/8", atau "1-1/4". Nilai `length_m` berupa angka panjang dalam meter.
-   - `devices`: daftar seluruh perangkat pasif G-Wave yang dilewati mulai dari splitter pertama setelah MCM/Combiner/HC hingga antena tersebut (jangan masukkan MCM/Combiner/HC). Gunakan kode standar berikut:
-     * "SPLITTER_2WAY"
-     * "SPLITTER_3WAY"
-     * "SPLITTER_4WAY"
-     * "COUPLER_5_COUPLED" atau "COUPLER_5_THROUGH"
-     * "COUPLER_6_COUPLED" atau "COUPLER_6_THROUGH"
-     * "COUPLER_7_COUPLED" atau "COUPLER_7_THROUGH"
-     * "COUPLER_10_COUPLED" atau "COUPLER_10_THROUGH"
-     * "COUPLER_15_COUPLED" atau "COUPLER_15_THROUGH"
-     * "COUPLER_20_COUPLED" atau "COUPLER_20_THROUGH"
-     * "COUPLER_30_COUPLED" atau "COUPLER_30_THROUGH"
+Keterangan key:
+- "a": kode titik antena (gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 jika nomor berulang antar-lantai).
+- "f": lantai huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2).
+- "t": tipe antena (Antenna Omni atau Antenna Planar).
+- "c": list segmen kabel [ukuran, panjang_meter] mulai dari output MCM/Combiner/HC sampai antena. Ukuran hanya "1/2", "7/8", atau "1-1/4".
+- "d": list kode perangkat pasif G-Wave mulai dari splitter pertama setelah output MCM/Combiner/HC sampai antena (JANGAN masukkan MCM/Combiner/HC):
+  * "S2" = Power Splitter 2-Way
+  * "S3" = Power Splitter 3-Way
+  * "S4" = Power Splitter 4-Way
+  * "C5_C" / "C5_T" = Coupler 5 dB (Coupled / Through)
+  * "C6_C" / "C6_T" = Coupler 6 dB (Coupled / Through)
+  * "C7_C" / "C7_T" = Coupler 7 dB (Coupled / Through)
+  * "C10_C" / "C10_T" = Coupler 10 dB (Coupled / Through)
+  * "C15_C" / "C15_T" = Coupler 15 dB (Coupled / Through)
+  * "C20_C" / "C20_T" = Coupler 20 dB (Coupled / Through)
+  * "C30_C" / "C30_T" = Coupler 30 dB (Coupled / Through)
+
+2. ATURAN PENELUSURAN JALUR (END-TO-END PER ANTENA):
+   - HANYA keluarkan titik Antena Indoor distribusi (AO-1, AO-2, AP-1, dst.). DILARANG memasukkan Repeater, MCM/Combiner/HC, Splitter, Coupler, kabel riser (TO LT / FROM LT), maupun Antenna Donor.
+   - TITIK AWAL (WAJIB): Sertakan segmen kabel pertama tepat setelah port output MCM/Combiner/HC (misal ["1/2",10]) dan splitter percabangan utama pertama yang membagi jalur ke tiap lantai (perhatikan dengan teliti jika ada 2 garis riser sejajar turun ke lantai berbeda -> total 3 cabang = "S3").
+   - PENCOCOKAN RISER LINTAS GAMBAR: Cocokkan label "FROM LT X" dengan label "TO LT X" yang sesuai pada gambar sebelumnya (misal ke Lantai 3 memakai riser ["7/8",30] dan ke Lantai 2 memakai riser ["7/8",40]; JANGAN tertukar).
+   - TELUSURI CABANG AKHIR SATU PER SATU: Pada lantai dengan kombinasi splitter 4-Way dan 3-Way berurutan, ikuti garis tiap antena ke simbol splitternya secara individual.
 """
 
 CABLE_LOSS_PER_M = {
@@ -65,23 +57,16 @@ CABLE_LOSS_PER_M = {
 }
 
 DEVICE_LOSS_DB = {
-    "SPLITTER_2WAY": 3.5,
-    "SPLITTER_3WAY": 5.5,
-    "SPLITTER_4WAY": 6.5,
-    "COUPLER_5_COUPLED": 5.5,
-    "COUPLER_5_THROUGH": 1.8,
-    "COUPLER_6_COUPLED": 6.5,
-    "COUPLER_6_THROUGH": 1.5,
-    "COUPLER_7_COUPLED": 7.5,
-    "COUPLER_7_THROUGH": 1.2,
-    "COUPLER_10_COUPLED": 10.5,
-    "COUPLER_10_THROUGH": 0.7,
-    "COUPLER_15_COUPLED": 15.4,
-    "COUPLER_15_THROUGH": 0.4,
-    "COUPLER_20_COUPLED": 20.3,
-    "COUPLER_20_THROUGH": 0.3,
-    "COUPLER_30_COUPLED": 30.3,
-    "COUPLER_30_THROUGH": 0.2,
+    "S2": 3.5, "SPLITTER_2WAY": 3.5,
+    "S3": 5.5, "SPLITTER_3WAY": 5.5,
+    "S4": 6.5, "SPLITTER_4WAY": 6.5,
+    "C5_C": 5.5, "C5_T": 1.8,
+    "C6_C": 6.5, "C6_T": 1.5,
+    "C7_C": 7.5, "C7_T": 1.2,
+    "C10_C": 10.5, "C10_T": 0.7,
+    "C15_C": 15.4, "C15_T": 0.4,
+    "C20_C": 20.3, "C20_T": 0.3,
+    "C30_C": 30.3, "C30_T": 0.2,
 }
 
 def get_available_gemini_models():
@@ -108,13 +93,13 @@ def get_available_gemini_models():
                         valid_names.append(name)
 
             def model_priority(n):
-                if n == "gemini-3.8-flash":
-                    return 0
-                if "3." in n and "flash" in n:
-                    return 1
                 if n == "gemini-flash-latest":
+                    return 0
+                if n == "gemini-3.8-flash":
+                    return 1
+                if "pro" in n and "latest" in n:
                     return 2
-                if "pro" in n:
+                if "3." in n and "flash" in n:
                     return 3
                 return 4
 
@@ -125,11 +110,11 @@ def get_available_gemini_models():
     except Exception:
         pass
 
-    return ["gemini-3.8-flash", "gemini-flash-latest", "gemini-pro-latest"]
+    return ["gemini-flash-latest", "gemini-3.8-flash", "gemini-pro-latest"]
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1700, 1700), Image.Resampling.LANCZOS)
+    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -169,26 +154,32 @@ def calculate_rf_csv_from_json(raw_text):
     start_idx = text.find("[")
     end_idx = text.rfind("]")
     if start_idx == -1 or end_idx == -1:
-        raise ValueError("Respons AI tidak mengandung struktur JSON array yang valid.")
+        raise ValueError("Respons AI tidak mengandung JSON array yang valid.")
 
     items = json.loads(text[start_idx:end_idx + 1])
     rows = ["TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB"]
 
     for item in items:
-        titik = str(item.get("titik_antena", "")).strip().replace(",", "")
-        lantai = str(item.get("lantai_posisi", "")).strip().upper().replace(",", "")
-        tipe = str(item.get("tipe_antena", "Antenna Omni")).strip().replace(",", "")
+        titik = str(item.get("a") or item.get("titik_antena", "")).strip().replace(",", "")
+        lantai = str(item.get("f") or item.get("lantai_posisi", "")).strip().upper().replace(",", "")
+        tipe = str(item.get("t") or item.get("tipe_antena", "Antenna Omni")).strip().replace(",", "")
 
         theo_feeder = 0.0
-        for c in item.get("cables", []):
-            sz = str(c.get("size", "1/2")).replace('"', '').strip()
-            length_m = float(c.get("length_m", 0))
+        for c in (item.get("c") or item.get("cables") or []):
+            if isinstance(c, list) and len(c) >= 2:
+                sz = str(c[0]).replace('"', '').strip()
+                length_m = float(c[1])
+            elif isinstance(c, dict):
+                sz = str(c.get("size", "1/2")).replace('"', '').strip()
+                length_m = float(c.get("length_m", 0))
+            else:
+                continue
             rate = CABLE_LOSS_PER_M.get(sz, 0.07)
             theo_feeder += length_m * rate
 
         feeder_loss = round(theo_feeder * 1.12, 2)
 
-        devices = item.get("devices", [])
+        devices = item.get("d") or item.get("devices") or []
         splitter_loss = 0.0
         for dev in devices:
             key = str(dev).strip().upper()
@@ -228,7 +219,7 @@ def chat():
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Ekstrak jalur kabel dan perangkat pasif untuk SELURUH titik antena indoor dari semua lantai menjadi 1 JSON array sesuai format di atas.\n"
+            f"Ekstrak jalur kabel dan perangkat pasif untuk SELURUH titik antena indoor dari semua lantai menjadi 1 JSON array ringkas sesuai format di atas.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
@@ -241,7 +232,8 @@ def chat():
         start_time = time.time()
 
         for model_name in candidate_models:
-            if time.time() - start_time > 80:
+            elapsed = time.time() - start_time
+            if elapsed > 75:
                 break
 
             base_host = "generativelanguage.googleapis.com"
@@ -264,37 +256,25 @@ def chat():
             }
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
+            per_req_timeout = min(40, max(20, int(78 - elapsed)))
 
-            for attempt in range(2):
-                try:
-                    resp = requests.post(url, json=current_payload, timeout=75)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+            try:
+                resp = requests.post(url, json=current_payload, timeout=per_req_timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    if raw_text:
+                        break
+                elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                    resp2 = requests.post(url, json=payload_basic, timeout=per_req_timeout)
+                    if resp2.status_code == 200:
+                        raw_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"]
                         if raw_text:
                             break
-                    elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                        current_payload = payload_basic
-                        continue
-                    elif resp.status_code == 429:
-                        last_error = f"Kuota API Gemini ({model_name}) penuh sementara (HTTP 429)."
-                        if attempt == 0 and (time.time() - start_time < 60):
-                            time.sleep(4)
-                            continue
-                        break
-                    elif resp.status_code == 503:
-                        last_error = f"HTTP 503 ({model_name}): Server sibuk."
-                        time.sleep(2)
-                        continue
-                    else:
-                        last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
-                        break
-                except Exception as err:
-                    last_error = f"{model_name}: {str(err)}"
-                    break
-
-            if raw_text:
-                break
+                else:
+                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+            except Exception as err:
+                last_error = f"{model_name}: {str(err)}"
 
         if not raw_text:
             raise Exception(f"Detail error: {last_error}")
