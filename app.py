@@ -8,10 +8,9 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# Membaca API Key secara aman dari Environment Variable di server PythonAnywhere
-# (Jangan menulis API Key asli di kode GitHub agar tidak diblokir otomatis)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Membaca API Key AQ.Ab8... dari Environment Variable di file WSGI PythonAnywhere
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+client = genai.Client(vertexai=True, api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
@@ -49,27 +48,22 @@ Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,
 """
 
 def parse_uploaded_images(req):
-    """Mengambil semua gambar baik dari multipart form-data ('files'/'file') maupun JSON ('images'/'image')."""
     pil_images = []
-
     if req.files:
         uploaded_files = req.files.getlist('files')
         if not uploaded_files or all(f.filename == '' for f in uploaded_files):
             single = req.files.get('file')
             if single and single.filename != '':
                 uploaded_files = [single]
-
         for f in uploaded_files:
             if f and f.filename != '':
                 img = Image.open(f.stream).convert("RGB")
                 pil_images.append(img)
-
     elif req.is_json:
         data = req.get_json(silent=True) or {}
         b64_list = data.get('images', [])
         if not b64_list and data.get('image'):
             b64_list = [data.get('image')]
-
         for b64_str in b64_list:
             if not b64_str:
                 continue
@@ -78,7 +72,6 @@ def parse_uploaded_images(req):
             img_bytes = base64.b64decode(b64_str)
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
             pil_images.append(img)
-
     return pil_images
 
 def clean_csv_output(raw_text):
@@ -122,7 +115,8 @@ def chat():
         )
 
         contents = [*images, prompt_text]
-        candidate_models = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']
+        # Model yang didukung Vertex AI Express Mode (AQ.Ab8...)
+        candidate_models = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']
         response = None
         last_error = None
 
@@ -143,7 +137,7 @@ def chat():
                 continue
 
         if not response or not response.text:
-            raise Exception(f"Semua model gagal memproses gambar. Detail: {str(last_error)}")
+            raise Exception(f"Detail error: {str(last_error)}")
 
         csv_result = clean_csv_output(response.text)
         formatted_reply = f"```csv\n{csv_result}\n```" if request.path == '/chat' else csv_result
