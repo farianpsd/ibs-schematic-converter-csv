@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 import base64
-import threading
+import shutil
 import requests
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
@@ -14,26 +14,17 @@ app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 CACHED_MODELS = []
-JOBS = {}  # Menyimpan status & hasil background job di memori
+JOB_BASE_DIR = "/tmp/ibs_jobs"
+os.makedirs(JOB_BASE_DIR, exist_ok=True)
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak topologi jaringan dari skematik multi-lantai menjadi JSON terstruktur untuk setiap titik antena indoor dengan ketelitian tinggi.
 
-ATURAN EKSTRAKSI (WAJIB JSON ARRAY VALID):
-1. HANYA keluarkan JSON array murni (tanpa markdown ```json dan tanpa teks tambahan) dengan struktur berikut:
-[
-  {
-    "a": "LT4-AO-1",
-    "f": "LANTAI 4",
-    "t": "Antenna Omni",
-    "c": [["1/2", 10], ["1/2", 50]],
-    "d": ["S3", "S3", "S3"]
-  }
-]
-
+ATURAN EKSTRAKSI (WAJIB JSON VALID):
+1. HANYA keluarkan JSON murni (tanpa markdown ```json dan tanpa teks tambahan).
 2. ATURAN PENELUSURAN JALUR (END-TO-END PER ANTENA):
    - HANYA ekstrak titik Antena Indoor distribusi (AO-1, AO-2, AP-1, dst.). DILARANG memasukkan Repeater, MCM/Combiner/HC, Splitter, Coupler, kabel riser (TO LT / FROM LT), maupun Antenna Donor sebagai baris antena.
-   - Gabungkan semua gambar skematik menjadi SATU rangkaian sistem distribusi yang terhubung. Telusuri jalur MULAI DARI port output sumber utama (MCM/Combiner/HC atau Repeater) sampai ke masing-masing titik antena:
+   - Telusuri jalur MULAI DARI port output sumber utama (MCM/Combiner/HC atau Repeater) sampai ke masing-masing titik antena:
      * TITIK AWAL (WAJIB): Sertakan segmen kabel pertama tepat setelah port output MCM/Combiner/HC (misal ["1/2", 10]) dan splitter percabangan utama pertama yang membagi jalur ke tiap lantai. Perhatikan dengan sangat teliti jika ada 2 garis riser vertikal yang digambar berdekatan/sejajar turun ke lantai berbeda (misal 1 cabang ke Lantai 4 + 2 garis riser turun ke Lantai 3 & Lantai 2 = 3 output -> wajib dicatat sebagai "S3", BUKAN "S2").
      * PENCOCOKAN RISER LINTAS GAMBAR: Pastikan setiap label "FROM LT X" pada gambar lantai tujuan dicocokkan persis dengan label "TO LT Y" yang sesuai pada gambar sebelumnya (misal jalur ke Lantai 3 memakai riser ["7/8", 30] dan jalur ke Lantai 2 memakai riser ["7/8", 40]; JANGAN tertukar panjang riser antar-lantai).
      * TELUSURI CABANG SPLITTER AKHIR SATU PER SATU: Pada lantai dengan beberapa splitter akhir (misal kombinasi 4-Way dan 3-Way secara berurutan), ikuti garis masing-masing antena ke simbol splitternya secara individual—jangan mengelompokkan berdasarkan urutan nomor antena.
@@ -76,6 +67,36 @@ DEVICE_LOSS_DB = {
     "C20_C": 20.3, "C20_T": 0.3,
     "C30_C": 30.3, "C30_T": 0.2,
 }
+
+def cleanup_old_jobs(max_age_sec=3600):
+    now = time.time()
+    try:
+        for name in os.listdir(JOB_BASE_DIR):
+            path = os.path.join(JOB_BASE_DIR, name)
+            if os.path.isdir(path) and (now - os.path.getmtime(path) > max_age_sec):
+                shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+def get_job_dir(job_id):
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)
+    return os.path.join(JOB_BASE_DIR, safe_id)
+
+def load_job_state(job_id):
+    state_file = os.path.join(get_job_dir(job_id), "state.json")
+    if not os.path.exists(state_file):
+        return None
+    with open(state_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_job_state(job_id, state):
+    jdir = get_job_dir(job_id)
+    os.makedirs(jdir, exist_ok=True)
+    state_file = os.path.join(jdir, "state.json")
+    tmp_file = state_file + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp_file, state_file)
 
 def get_available_gemini_models():
     global CACHED_MODELS
@@ -120,7 +141,7 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # Resolusi tinggi 2200px agar seluruh angka panjang kabel & garis sejajar terbaca tajam
+    # Resolusi tinggi 2200px agar angka panjang kabel & garis sejajar terbaca tajam
     img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
@@ -153,17 +174,22 @@ def parse_uploaded_images(req):
             b64_images.append(encode_image_jpeg_b64(img))
     return b64_images
 
-def calculate_rf_csv_from_json(raw_text):
+def parse_json_payload(raw_text):
     text = raw_text.strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
-    start_idx = text.find("[")
-    end_idx = text.rfind("]")
-    if start_idx == -1 or end_idx == -1:
-        raise ValueError("Respons AI tidak mengandung struktur JSON array yang valid.")
+    obj_start = text.find("{")
+    arr_start = text.find("[")
+    if obj_start != -1 and (arr_start == -1 or obj_start < arr_start):
+        obj_end = text.rfind("}")
+        return json.loads(text[obj_start:obj_end + 1])
+    elif arr_start != -1:
+        arr_end = text.rfind("]")
+        return {"antennas": json.loads(text[arr_start:arr_end + 1]), "risers": []}
+    raise ValueError("Respons AI tidak mengandung struktur JSON yang valid.")
 
-    items = json.loads(text[start_idx:end_idx + 1])
+def calculate_rf_csv_from_antennas(items):
     rows = ["TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB"]
 
     for item in items:
@@ -200,88 +226,85 @@ def calculate_rf_csv_from_json(raw_text):
 
     return "\n".join(rows)
 
-def process_extraction_job(job_id, b64_images, user_message):
-    try:
-        JOBS[job_id]["status"] = "processing"
-        JOBS[job_id]["step"] = "Menghubungi Gemini Vision untuk analisis topologi presisi tinggi..."
-
+def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_message):
+    if img_idx == 0:
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Telusuri seluruh jalur distribusi secara cermat mulai dari output MCM/Combiner/HC (termasuk segmen kabel awal dan splitter pertama) "
-            f"menuju setiap titik antena indoor di semua lantai dan keluarkan JSON array lengkap.\n"
-            f"Catatan tambahan user: {user_message}"
+            f"Ini adalah GAMBAR KE-1 dari total {total_images} gambar skematik IBS.\n"
+            "Keluarkan JSON object dengan format persis berikut:\n"
+            '{"antennas":[{"a":"LT4-AO-1","f":"LANTAI 4","t":"Antenna Omni","c":[["1/2",10],["1/2",50]],"d":["S3","S3","S3"]}],'
+            '"risers":[{"target":"TO LT 3","c":[["1/2",10],["7/8",30]],"d":["S3"]},{"target":"TO LT 2","c":[["1/2",10],["7/8",40]],"d":["S3"]}]}\n'
+            "- 'antennas': HANYA titik antena indoor pada gambar ke-1 ini, ditelusuri mulai dari kabel pertama setelah output MCM/Combiner/HC dan splitter pertama (perhatikan jika ada 2 garis riser sejajar turun -> total 3 cabang = S3).\n"
+            "- 'risers': daftar semua kabel riser keluar (TO LT X) beserta akumulasi kabel awal + kabel riser dan splitter awal yang sudah dilewatinya (JANGAN tertukar panjang riser tiap lantai).\n"
+        )
+    else:
+        riser_json_str = json.dumps(riser_context)
+        prompt_text = (
+            f"{SYSTEM_INSTRUCTION}\n\n"
+            f"Ini adalah GAMBAR KE-{img_idx + 1} dari total {total_images} gambar skematik IBS.\n"
+            f"REFERENSI RISER DARI GAMBAR SEBELUMNYA: {riser_json_str}\n\n"
+            "Keluarkan JSON object dengan format persis berikut:\n"
+            '{"antennas":[{"a":"LT3-AO-1","f":"LANTAI 3","t":"Antenna Omni","c":[["1/2",10],["7/8",30],["1/2",50]],"d":["S3","S2","S2","S4"]}],"risers":[]}\n'
+            "- Cocokkan tiap label 'FROM LT X' pada gambar ini dengan 'target' yang sesuai pada REFERENSI RISER di atas, lalu gabungkan list 'c' dan 'd' dari referensi riser tersebut dengan kabel & splitter di lantai ini untuk setiap antena (telusuri cabang splitter akhir 4-Way vs 3-Way satu per satu secara individual).\n"
         )
 
-        parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
-        parts.append({"text": prompt_text})
+    if user_message:
+        prompt_text += f"Catatan tambahan user: {user_message}\n"
 
-        candidate_models = get_available_gemini_models()
-        raw_text = None
-        last_error = None
+    parts = [
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
+        {"text": prompt_text}
+    ]
 
-        for model_name in candidate_models:
-            JOBS[job_id]["step"] = f"Menganalisis jalur RF menggunakan model {model_name} (resolusi tinggi)..."
-            base_host = "generativelanguage.googleapis.com"
-            url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    candidate_models = get_available_gemini_models()
+    last_error = None
 
-            payload_with_thinking = {
-                "contents": [{"parts": parts}],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "responseMimeType": "application/json",
-                    "thinkingConfig": {"thinkingLevel": "HIGH"}
-                }
+    for model_name in candidate_models:
+        base_host = "generativelanguage.googleapis.com"
+        url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+
+        payload_with_thinking = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "HIGH"}
             }
-            payload_basic = {
-                "contents": [{"parts": parts}],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "responseMimeType": "application/json"
-                }
+        }
+        payload_basic = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json"
             }
+        }
 
-            current_payload = payload_with_thinking if "3." in model_name else payload_basic
+        current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(3):
-                try:
-                    # Timeout longgar 240 detik karena berjalan di background thread
-                    resp = requests.post(url, json=current_payload, timeout=240)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                        if raw_text:
-                            break
-                    elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                        current_payload = payload_basic
-                        continue
-                    elif resp.status_code in (429, 503):
-                        last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(5 * (attempt + 1))
-                        continue
-                    else:
-                        last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
-                        break
-                except Exception as err:
-                    last_error = f"{model_name}: {str(err)}"
-                    time.sleep(2)
-
-            if raw_text:
+        for attempt in range(2):
+            try:
+                # 1 gambar per request, aman di bawah batas gateway PythonAnywhere
+                resp = requests.post(url, json=current_payload, timeout=75)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    if raw_text:
+                        return parse_json_payload(raw_text)
+                elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                    current_payload = payload_basic
+                    continue
+                elif resp.status_code in (429, 503):
+                    last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
+                    time.sleep(3)
+                    continue
+                else:
+                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+                    break
+            except Exception as err:
+                last_error = f"{model_name}: {str(err)}"
                 break
 
-        if not raw_text:
-            raise Exception(f"Gagal mengekstrak skematik: {last_error}")
-
-        JOBS[job_id]["step"] = "Menghitung Link Budget G-Wave secara eksak..."
-        csv_result = calculate_rf_csv_from_json(raw_text)
-
-        JOBS[job_id]["status"] = "done"
-        JOBS[job_id]["csv"] = csv_result
-        JOBS[job_id]["image_count"] = len(b64_images)
-
-    except Exception as e:
-        JOBS[job_id]["status"] = "error"
-        JOBS[job_id]["message"] = f"Error: {str(e)}"
+    raise Exception(f"Gagal memproses gambar ke-{img_idx + 1}: {last_error}")
 
 @app.route('/')
 def index():
@@ -290,66 +313,131 @@ def index():
 @app.route('/chat', methods=['POST'])
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    if not GEMINI_API_KEY:
-        msg = "GEMINI_API_KEY belum diset di file WSGI PythonAnywhere."
-        return jsonify({'status': 'error', 'response': msg, 'message': msg}), 500
+    try:
+        if not GEMINI_API_KEY:
+            msg = "GEMINI_API_KEY belum diset di file WSGI PythonAnywhere."
+            return jsonify({'status': 'error', 'response': msg, 'message': msg}), 500
 
-    b64_images = parse_uploaded_images(request)
-    if not b64_images:
-        msg = 'Silakan unggah atau tempel (Ctrl+V) 1 atau lebih gambar skematik IBS terlebih dahulu.'
-        return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
+        cleanup_old_jobs()
+        b64_images = parse_uploaded_images(request)
+        if not b64_images:
+            msg = 'Silakan unggah atau tempel (Ctrl+V) 1 atau lebih gambar skematik IBS terlebih dahulu.'
+            return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
 
-    user_message = (
-        request.form.get('message', '')
-        if not request.is_json
-        else (request.get_json(silent=True) or {}).get('message', '')
-    )
+        user_message = (
+            request.form.get('message', '')
+            if not request.is_json
+            else (request.get_json(silent=True) or {}).get('message', '')
+        )
 
-    job_id = str(uuid.uuid4())
-    JOBS[job_id] = {
-        "status": "queued",
-        "step": "Menyiapkan gambar resolusi tinggi...",
-        "created_at": time.time()
-    }
+        job_id = str(uuid.uuid4())
+        jdir = get_job_dir(job_id)
+        os.makedirs(jdir, exist_ok=True)
 
-    worker = threading.Thread(
-        target=process_extraction_job,
-        args=(job_id, b64_images, user_message),
-        daemon=True
-    )
-    worker.start()
+        for idx, b64_str in enumerate(b64_images):
+            with open(os.path.join(jdir, f"img_{idx}.b64"), "w", encoding="utf-8") as f:
+                f.write(b64_str)
 
-    return jsonify({
-        'status': 'processing',
-        'job_id': job_id,
-        'step': JOBS[job_id]["step"]
-    })
+        state = {
+            "status": "processing",
+            "total_images": len(b64_images),
+            "current_index": 0,
+            "user_message": user_message,
+            "antennas": [],
+            "risers": [],
+            "step": f"Gambar tersimpan. Siap menganalisis gambar 1 dari {len(b64_images)}..."
+        }
+        save_job_state(job_id, state)
+
+        return jsonify({
+            'status': 'processing',
+            'job_id': job_id,
+            'step': state["step"]
+        })
+
+    except Exception as e:
+        err_msg = f"Error: {str(e)}"
+        return jsonify({'status': 'error', 'message': err_msg, 'response': err_msg}), 500
 
 @app.route('/api/job/<job_id>', methods=['GET'])
 def job_status(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({'status': 'error', 'message': 'Job tidak ditemukan atau server baru saja di-reload.'}), 404
+    state = load_job_state(job_id)
+    if not state:
+        return jsonify({'status': 'error', 'message': 'Job tidak ditemukan atau sudah kedaluwarsa.'}), 404
 
-    if job["status"] == "done":
-        csv_data = job["csv"]
+    if state["status"] == "done":
+        csv_data = state["csv"]
         return jsonify({
             'status': 'success',
-            'image_count': job.get("image_count", 1),
+            'image_count': state["total_images"],
             'csv': csv_data,
             'reply': csv_data,
             'response': csv_data
         })
-    elif job["status"] == "error":
+
+    if state["status"] == "error":
         return jsonify({
             'status': 'error',
-            'message': job.get("message", "Terjadi kesalahan"),
-            'response': job.get("message", "Terjadi kesalahan")
+            'message': state.get("message", "Terjadi kesalahan"),
+            'response': state.get("message", "Terjadi kesalahan")
         })
-    else:
+
+    # Proses tepat 1 gambar per panggilan polling agar tidak pernah menyentuh batas timeout PythonAnywhere
+    idx = state["current_index"]
+    total = state["total_images"]
+    jdir = get_job_dir(job_id)
+    img_path = os.path.join(jdir, f"img_{idx}.b64")
+
+    try:
+        with open(img_path, "r", encoding="utf-8") as f:
+            b64_img = f.read()
+
+        parsed = run_single_image_step(
+            b64_img=b64_img,
+            img_idx=idx,
+            total_images=total,
+            riser_context=state.get("risers", []),
+            user_message=state.get("user_message", "")
+        )
+
+        state["antennas"].extend(parsed.get("antennas", []))
+        if parsed.get("risers"):
+            state["risers"].extend(parsed.get("risers", []))
+
+        state["current_index"] = idx + 1
+
+        if state["current_index"] >= total:
+            if not state["antennas"]:
+                raise Exception("Tidak ada titik antena indoor yang terbaca dari gambar.")
+            csv_result = calculate_rf_csv_from_antennas(state["antennas"])
+            state["status"] = "done"
+            state["csv"] = csv_result
+            save_job_state(job_id, state)
+
+            return jsonify({
+                'status': 'success',
+                'image_count': total,
+                'csv': csv_result,
+                'reply': csv_result,
+                'response': csv_result
+            })
+        else:
+            state["step"] = f"Gambar {idx + 1}/{total} selesai. Menganalisis gambar {idx + 2}/{total}..."
+            save_job_state(job_id, state)
+            return jsonify({
+                'status': 'processing',
+                'step': state["step"]
+            })
+
+    except Exception as e:
+        err_msg = f"Error: {str(e)}"
+        state["status"] = "error"
+        state["message"] = err_msg
+        save_job_state(job_id, state)
         return jsonify({
-            'status': 'processing',
-            'step': job.get("step", "Sedang memproses...")
+            'status': 'error',
+            'message': err_msg,
+            'response': err_msg
         })
 
 if __name__ == '__main__':
