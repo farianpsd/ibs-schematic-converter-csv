@@ -18,21 +18,21 @@ JOB_BASE_DIR = "/tmp/ibs_jobs"
 os.makedirs(JOB_BASE_DIR, exist_ok=True)
 
 SYSTEM_INSTRUCTION = """
-Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak topologi jaringan dari skematik multi-lantai menjadi JSON terstruktur untuk setiap titik antena indoor dengan ketelitian tinggi.
+Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak topologi jaringan dari skematik multi-lantai menjadi JSON terstruktur untuk setiap titik antena indoor dengan ketelitian tinggi (>95%).
 
 ATURAN EKSTRAKSI (WAJIB JSON VALID):
 1. HANYA keluarkan JSON murni (tanpa markdown ```json dan tanpa teks tambahan).
 2. ATURAN PENELUSURAN JALUR (END-TO-END PER ANTENA):
    - HANYA ekstrak titik Antena Indoor distribusi (AO-1, AO-2, AP-1, dst.). DILARANG memasukkan Repeater, MCM/Combiner/HC, Splitter, Coupler, kabel riser (TO LT / FROM LT), maupun Antenna Donor sebagai baris antena.
    - Telusuri jalur MULAI DARI port output sumber utama (MCM/Combiner/HC atau Repeater) sampai ke masing-masing titik antena:
-     * TITIK AWAL (WAJIB): Sertakan segmen kabel pertama tepat setelah port output MCM/Combiner/HC (misal ["1/2", 10]) dan splitter percabangan utama pertama yang membagi jalur ke tiap lantai. Perhatikan dengan sangat teliti jika ada 2 garis riser vertikal yang digambar berdekatan/sejajar turun ke lantai berbeda (misal 1 cabang ke Lantai 4 + 2 garis riser turun ke Lantai 3 & Lantai 2 = 3 output -> wajib dicatat sebagai "S3", BUKAN "S2").
-     * PENCOCOKAN RISER LINTAS GAMBAR: Pastikan setiap label "FROM LT X" pada gambar lantai tujuan dicocokkan persis dengan label "TO LT Y" yang sesuai pada gambar sebelumnya (misal jalur ke Lantai 3 memakai riser ["7/8", 30] dan jalur ke Lantai 2 memakai riser ["7/8", 40]; JANGAN tertukar panjang riser antar-lantai).
-     * TELUSURI CABANG SPLITTER AKHIR SATU PER SATU: Pada lantai dengan beberapa splitter akhir (misal kombinasi 4-Way dan 3-Way secara berurutan), ikuti garis masing-masing antena ke simbol splitternya secara individual—jangan mengelompokkan berdasarkan urutan nomor antena.
-   - "a": kode titik antena sesuai label gambar (gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 jika nomor berulang antar-lantai).
+     * TITIK AWAL (WAJIB): Sertakan segmen kabel pertama tepat setelah port output sumber utama (MCM/Combiner/HC/Repeater) dan splitter percabangan utama pertama yang membagi jalur ke tiap lantai. Hitung dengan sangat teliti seluruh cabang output splitter utama tersebut (termasuk garis riser vertikal yang digambar berdekatan/sejajar turun ke lantai-lantai di bawahnya: total 2 output = "S2", 3 output = "S3", 4 output = "S4").
+     * PENCOCOKAN RISER LINTAS GAMBAR: Pastikan setiap label asal riser pada gambar lantai tujuan (misal "FROM LT X") dicocokkan persis dengan label tujuan riser yang sesuai pada gambar sebelumnya (misal "TO LT Y") beserta ukuran dan panjang meternya—jangan pernah menukar kabel riser antar-lantai.
+     * VERIFIKASI JUMLAH CABANG SPLITTER (KONSISTENSI TOPOLOGI): Untuk setiap simbol Power Splitter yang dilewati, hitung secara fisik berapa banyak garis output yang keluar dari simbol tersebut (2 cabang = "S2", 3 cabang = "S3", 4 cabang = "S4"). Semua titik antena yang bercabang dari satu simbol splitter akhir yang sama WAJIB memiliki kode splitter terakhir yang sama dan panjang kabel cabangnya dibaca satu per satu sesuai angka pada masing-masing garis antena.
+   - "a": kode titik antena sesuai label gambar (gunakan awalan lantai seperti LT4-AO-1, LT3-AO-1, LT2-AO-1 jika nomor antena berulang antar-lantai).
    - "f": posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2).
    - "t": jenis antena dengan rapi (Antenna Omni atau Antenna Planar).
-   - "c": list seluruh segmen kabel [ukuran, panjang_meter] mulai dari output MCM/Combiner/HC hingga antena. Ukuran hanya boleh: "1/2", "7/8", atau "1-1/4".
-   - "d": list seluruh kode perangkat pasif G-Wave mulai dari splitter pertama setelah output MCM/Combiner/HC hingga antena (JANGAN masukkan MCM/Combiner/HC):
+   - "c": list seluruh segmen kabel [ukuran, panjang_meter] mulai dari output sumber utama hingga antena. Ukuran hanya boleh: "1/2", "7/8", atau "1-1/4".
+   - "d": list seluruh kode perangkat pasif G-Wave mulai dari splitter pertama setelah output sumber utama hingga antena (JANGAN masukkan MCM/Combiner/HC):
      * "S2" = Power Splitter 2-Way
      * "S3" = Power Splitter 3-Way
      * "S4" = Power Splitter 4-Way
@@ -141,9 +141,10 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1750, 1750), Image.Resampling.LANCZOS)
+    # Resolusi penuh 2400px + quality 92 agar garis splitter & angka kecil sangat jelas
+    img.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=92)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -225,36 +226,7 @@ def calculate_rf_csv_from_antennas(items):
 
     return "\n".join(rows)
 
-def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_message):
-    if img_idx == 0:
-        prompt_text = (
-            f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Ini adalah GAMBAR KE-1 dari total {total_images} gambar skematik IBS.\n"
-            "Keluarkan JSON object dengan format persis berikut:\n"
-            '{"antennas":[{"a":"LT4-AO-1","f":"LANTAI 4","t":"Antenna Omni","c":[["1/2",10],["1/2",50]],"d":["S3","S3","S3"]}],'
-            '"risers":[{"target":"TO LT 3","c":[["1/2",10],["7/8",30]],"d":["S3"]},{"target":"TO LT 2","c":[["1/2",10],["7/8",40]],"d":["S3"]}]}\n'
-            "- 'antennas': HANYA titik antena indoor pada gambar ke-1 ini, ditelusuri mulai dari kabel pertama setelah output MCM/Combiner/HC dan splitter pertama (perhatikan jika ada 2 garis riser sejajar turun -> total 3 cabang = S3).\n"
-            "- 'risers': daftar semua kabel riser keluar (TO LT X) beserta akumulasi kabel awal + kabel riser dan splitter awal yang sudah dilewatinya (JANGAN tertukar panjang riser tiap lantai).\n"
-        )
-    else:
-        riser_json_str = json.dumps(riser_context)
-        prompt_text = (
-            f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Ini adalah GAMBAR KE-{img_idx + 1} dari total {total_images} gambar skematik IBS.\n"
-            f"REFERENSI RISER DARI GAMBAR SEBELUMNYA: {riser_json_str}\n\n"
-            "Keluarkan JSON object dengan format persis berikut:\n"
-            '{"antennas":[{"a":"LT3-AO-1","f":"LANTAI 3","t":"Antenna Omni","c":[["1/2",10],["7/8",30],["1/2",50]],"d":["S3","S2","S2","S4"]}],"risers":[]}\n'
-            "- Cocokkan tiap label 'FROM LT X' pada gambar ini dengan 'target' yang sesuai pada REFERENSI RISER di atas, lalu gabungkan list 'c' dan 'd' dari referensi riser tersebut dengan kabel & splitter di lantai ini untuk setiap antena (telusuri cabang splitter akhir 4-Way vs 3-Way satu per satu secara individual).\n"
-        )
-
-    if user_message:
-        prompt_text += f"Catatan tambahan user: {user_message}\n"
-
-    parts = [
-        {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
-        {"text": prompt_text}
-    ]
-
+def call_gemini_high_precision(parts, step_label):
     candidate_models = get_available_gemini_models()
     last_error = None
 
@@ -267,7 +239,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": "LOW"}
+                "thinkingConfig": {"thinkingLevel": "HIGH"}
             }
         }
         payload_basic = {
@@ -282,7 +254,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
 
         for attempt in range(2):
             try:
-                resp = requests.post(url, json=current_payload, timeout=45)
+                resp = requests.post(url, json=current_payload, timeout=75)
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -293,7 +265,7 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
                     continue
                 elif resp.status_code in (429, 503):
                     last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
-                    time.sleep(2)
+                    time.sleep(3)
                     continue
                 else:
                     last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
@@ -302,7 +274,57 @@ def run_single_image_step(b64_img, img_idx, total_images, riser_context, user_me
                 last_error = f"{model_name}: {str(err)}"
                 break
 
-    raise Exception(f"Gagal memproses gambar ke-{img_idx + 1}: {last_error}")
+    raise Exception(f"Gagal pada {step_label}: {last_error}")
+
+def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message):
+    if img_idx == 0:
+        prompt_text = (
+            f"{SYSTEM_INSTRUCTION}\n\n"
+            f"Ini adalah GAMBAR KE-1 dari total {total_images} gambar skematik IBS.\n"
+            "Keluarkan JSON object dengan struktur:\n"
+            '{"antennas":[{"a":"<kode_antena>","f":"<LANTAI_X>","t":"<tipe_antena>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}],'
+            '"risers":[{"target":"<label_tujuan_riser>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}]}\n'
+            "- 'antennas': HANYA titik antena indoor pada gambar ke-1 ini, ditelusuri mulai dari kabel pertama setelah output sumber utama dan splitter percabangan pertama. Periksa jumlah garis cabang keluar pada setiap simbol splitter akhir secara teliti (2 cabang = S2, 3 cabang = S3, 4 cabang = S4) dan baca panjang kabel masing-masing antena secara individual.\n"
+            "- 'risers': daftar semua kabel riser keluar menuju gambar lantai lain beserta akumulasi kabel awal + kabel riser dan splitter awal yang sudah dilewatinya.\n"
+        )
+    else:
+        riser_json_str = json.dumps(riser_context)
+        prompt_text = (
+            f"{SYSTEM_INSTRUCTION}\n\n"
+            f"Ini adalah GAMBAR KE-{img_idx + 1} dari total {total_images} gambar skematik IBS.\n"
+            f"REFERENSI RISER DARI GAMBAR SEBELUMNYA: {riser_json_str}\n\n"
+            "Keluarkan JSON object dengan struktur:\n"
+            '{"antennas":[{"a":"<kode_antena>","f":"<LANTAI_X>","t":"<tipe_antena>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}],"risers":[]}\n'
+            "- Cocokkan setiap label asal riser pada gambar ini dengan 'target' yang sesuai pada REFERENSI RISER di atas, lalu gabungkan list 'c' dan 'd' dari referensi riser tersebut dengan kabel & splitter pada lantai ini untuk setiap antena (verifikasi jumlah cabang fisik pada tiap simbol splitter akhir satu per satu).\n"
+        )
+
+    if user_message:
+        prompt_text += f"Catatan tambahan user: {user_message}\n"
+
+    parts = [
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
+        {"text": prompt_text}
+    ]
+    return call_gemini_high_precision(parts, f"Ekstraksi Gambar {img_idx + 1}")
+
+def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
+    audit_prompt = (
+        f"{SYSTEM_INSTRUCTION}\n\n"
+        f"TUGAS AUDIT AKURASI TINGGI (GAMBAR KE-{img_idx + 1}):\n"
+        "Berikut adalah hasil ekstraksi awal (DRAFT JSON) untuk gambar ini:\n"
+        f"{json.dumps(draft_payload)}\n\n"
+        f"Referensi Riser lintas gambar (jika ada): {json.dumps(riser_context)}\n\n"
+        "Lakukan audit ulang secara ketat terhadap gambar skematik ini dan perbaiki setiap kesalahan pada DRAFT JSON di atas:\n"
+        "1. AUDIT JUMLAH CABANG SPLITTER AKHIR: Lihat setiap simbol Power Splitter pada gambar ini dan hitung secara fisik berapa garis antena yang keluar dari simbol tersebut (2 garis = S2, 3 garis = S3, 4 garis = S4). Pastikan semua antena yang terhubung ke satu simbol splitter yang sama memiliki kode splitter yang identik dan sesuai dengan jumlah garis fisiknya!\n"
+        "2. AUDIT PANJANG KABEL INDIVIDUAL: Cocokkan kembali label panjang kabel (meter) di setiap garis menuju masing-masing titik antena satu per satu agar tidak ada satu pun angka yang tertukar atau salah baca.\n"
+        "3. AUDIT RISER & SPLITTER AWAL: Pastikan kabel awal setelah output sumber utama dan splitter pembagi antar-lantai sudah masuk lengkap dan tidak tertukar antar-lantai.\n"
+        "Keluarkan JSON object final yang sudah diaudit dengan struktur persis sama (`antennas` dan `risers`)."
+    )
+    parts = [
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
+        {"text": audit_prompt}
+    ]
+    return call_gemini_high_precision(parts, f"Audit Gambar {img_idx + 1}")
 
 @app.route('/')
 def index():
@@ -340,10 +362,12 @@ def chat():
             "status": "processing",
             "total_images": len(b64_images),
             "current_index": 0,
+            "sub_phase": "extract",  # 'extract' -> 'audit' per gambar
+            "draft_payload": None,
             "user_message": user_message,
             "antennas": [],
             "risers": [],
-            "step": f"Gambar tersimpan. Siap menganalisis gambar 1 dari {len(b64_images)}..."
+            "step": f"Gambar tersimpan (resolusi penuh). Tahap 1: Ekstraksi topologi gambar 1/{len(b64_images)}..."
         }
         save_job_state(job_id, state)
 
@@ -382,6 +406,7 @@ def job_status(job_id):
 
     idx = state["current_index"]
     total = state["total_images"]
+    sub_phase = state.get("sub_phase", "extract")
     jdir = get_job_dir(job_id)
     img_path = os.path.join(jdir, f"img_{idx}.b64")
 
@@ -389,42 +414,61 @@ def job_status(job_id):
         with open(img_path, "r", encoding="utf-8") as f:
             b64_img = f.read()
 
-        parsed = run_single_image_step(
-            b64_img=b64_img,
-            img_idx=idx,
-            total_images=total,
-            riser_context=state.get("risers", []),
-            user_message=state.get("user_message", "")
-        )
-
-        state["antennas"].extend(parsed.get("antennas", []))
-        if parsed.get("risers"):
-            state["risers"].extend(parsed.get("risers", []))
-
-        state["current_index"] = idx + 1
-
-        if state["current_index"] >= total:
-            if not state["antennas"]:
-                raise Exception("Tidak ada titik antena indoor yang terbaca dari gambar.")
-            csv_result = calculate_rf_csv_from_antennas(state["antennas"])
-            state["status"] = "done"
-            state["csv"] = csv_result
-            save_job_state(job_id, state)
-
-            return jsonify({
-                'status': 'success',
-                'image_count': total,
-                'csv': csv_result,
-                'reply': csv_result,
-                'response': csv_result
-            })
-        else:
-            state["step"] = f"Gambar {idx + 1}/{total} selesai. Menganalisis gambar {idx + 2}/{total}..."
+        if sub_phase == "extract":
+            draft = run_extract_pass(
+                b64_img=b64_img,
+                img_idx=idx,
+                total_images=total,
+                riser_context=state.get("risers", []),
+                user_message=state.get("user_message", "")
+            )
+            state["draft_payload"] = draft
+            state["sub_phase"] = "audit"
+            state["step"] = f"Ekstraksi gambar {idx + 1}/{total} selesai. Mengaudit cabang splitter & panjang kabel..."
             save_job_state(job_id, state)
             return jsonify({
                 'status': 'processing',
                 'step': state["step"]
             })
+
+        else:
+            verified = run_audit_pass(
+                b64_img=b64_img,
+                img_idx=idx,
+                draft_payload=state.get("draft_payload") or {},
+                riser_context=state.get("risers", [])
+            )
+
+            state["antennas"].extend(verified.get("antennas", []))
+            if verified.get("risers"):
+                state["risers"].extend(verified.get("risers", []))
+
+            state["current_index"] = idx + 1
+            state["sub_phase"] = "extract"
+            state["draft_payload"] = None
+
+            if state["current_index"] >= total:
+                if not state["antennas"]:
+                    raise Exception("Tidak ada titik antena indoor yang terbaca dari gambar.")
+                csv_result = calculate_rf_csv_from_antennas(state["antennas"])
+                state["status"] = "done"
+                state["csv"] = csv_result
+                save_job_state(job_id, state)
+
+                return jsonify({
+                    'status': 'success',
+                    'image_count': total,
+                    'csv': csv_result,
+                    'reply': csv_result,
+                    'response': csv_result
+                })
+            else:
+                state["step"] = f"Audit gambar {idx + 1}/{total} selesai. Mengekstrak gambar {idx + 2}/{total}..."
+                save_job_state(job_id, state)
+                return jsonify({
+                    'status': 'processing',
+                    'step': state["step"]
+                })
 
     except Exception as e:
         err_msg = f"Error: {str(e)}"
