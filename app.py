@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import time
 import base64
 import requests
@@ -42,6 +43,8 @@ Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,
      * Antenna Donor = 11.0
      * Jika baris bukan merupakan koneksi akhir ke antena, isi Antenna_Gain_dBi = 0.
    - Net_Branch_Loss_dB = round(Component_Loss_dB - Antenna_Gain_dBi, 2)
+   - SEMUA KOLOM ANGKA (Length_m, Unit_Loss_dB_per_m, Component_Loss_dB, Antenna_Gain_dBi, Net_Branch_Loss_dB) WAJIB BERUPA SATU ANGKA DESIMAL MATANG (contoh: 4.20), DILARANG KERAS menulis tanda tambah atau rumus seperti 3.5+0.7.
+   - SETIAP BARIS DATA WAJIB DIPISAH DENGAN ENTER (NEWLINE), DILARANG MENGGABUNGKAN DUA BARIS DALAM SATU BARIS.
 
 6. DILARANG MENAMBAHKAN TEKS PENJELASAN APAPUN SEBELUM ATAU SESUDAH CSV.
 """
@@ -91,9 +94,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=75)
+    img.save(buf, format="JPEG", quality=82)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -125,14 +128,11 @@ def parse_uploaded_images(req):
 
 def clean_csv_output(raw_text):
     text = raw_text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = re.sub(r"\s+(?=(?:LT\d+|GF|B\d+|ROOF),)", "\n", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines)
 
 @app.route('/')
 def index():
@@ -218,14 +218,13 @@ def chat():
             raise Exception(f"Detail error: {last_error}")
 
         csv_result = clean_csv_output(raw_text)
-        formatted_reply = f"```csv\n{csv_result}\n```" if request.path == '/chat' else csv_result
 
         return jsonify({
             'status': 'success',
             'image_count': len(b64_images),
             'csv': csv_result,
-            'reply': formatted_reply,
-            'response': formatted_reply
+            'reply': csv_result,
+            'response': csv_result
         })
 
     except Exception as e:
