@@ -1,16 +1,13 @@
 import os
 import io
 import base64
+import requests
 from flask import Flask, render_template, request, jsonify
-import google.generativeai as genai
 from PIL import Image
 
 app = Flask(__name__)
 
-# Membaca key AQ.Ab8... dari file WSGI PythonAnywhere
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
 Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
@@ -47,8 +44,15 @@ Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,
 6. DILARANG MENAMBAHKAN TEKS PENJELASAN APAPUN SEBELUM ATAU SESUDAH CSV.
 """
 
+def encode_image_jpeg_b64(img):
+    img = img.convert("RGB")
+    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
 def parse_uploaded_images(req):
-    pil_images = []
+    b64_images = []
     if req.files:
         uploaded_files = req.files.getlist('files')
         if not uploaded_files or all(f.filename == '' for f in uploaded_files):
@@ -57,9 +61,8 @@ def parse_uploaded_images(req):
                 uploaded_files = [single]
         for f in uploaded_files:
             if f and f.filename != '':
-                img = Image.open(f.stream).convert("RGB")
-                img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
-                pil_images.append(img)
+                img = Image.open(f.stream)
+                b64_images.append(encode_image_jpeg_b64(img))
     elif req.is_json:
         data = req.get_json(silent=True) or {}
         b64_list = data.get('images', [])
@@ -71,10 +74,9 @@ def parse_uploaded_images(req):
             if "," in b64_str:
                 b64_str = b64_str.split(",", 1)[1]
             img_bytes = base64.b64decode(b64_str)
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
-            pil_images.append(img)
-    return pil_images
+            img = Image.open(io.BytesIO(img_bytes))
+            b64_images.append(encode_image_jpeg_b64(img))
+    return b64_images
 
 def clean_csv_output(raw_text):
     text = raw_text.strip()
@@ -99,8 +101,8 @@ def chat():
             msg = "GEMINI_API_KEY belum diset di file WSGI PythonAnywhere."
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 500
 
-        images = parse_uploaded_images(request)
-        if not images:
+        b64_images = parse_uploaded_images(request)
+        if not b64_images:
             msg = 'Silakan unggah atau tempel (Ctrl+V) 1 atau lebih gambar skematik IBS terlebih dahulu.'
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
 
@@ -112,35 +114,49 @@ def chat():
 
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Terdapat {len(images)} gambar skematik IBS yang saling terhubung. "
+            f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
             f"Ekstrak seluruh jalur, panjang kabel, splitter, loss, dan gain antena dari semua gambar tersebut menjadi SATU tabel CSV utuh.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
-        contents = [*images, prompt_text]
+        parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
+        parts.append({"text": prompt_text})
+
         candidate_models = ['gemini-3.8-flash', 'gemini-2.5-flash']
-        response = None
+        raw_text = None
         last_error = None
 
         for model_name in candidate_models:
+            url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{"parts": parts}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "thinkingConfig": {"thinkingBudget": 0}
+                }
+            }
             try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(contents)
-                if response and response.text:
-                    break
+                resp = requests.post(url, json=payload, timeout=45)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    if raw_text:
+                        break
+                else:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
             except Exception as err:
-                last_error = err
+                last_error = str(err)
                 continue
 
-        if not response or not response.text:
-            raise Exception(f"Detail error: {str(last_error)}")
+        if not raw_text:
+            raise Exception(f"Detail error: {last_error}")
 
-        csv_result = clean_csv_output(response.text)
+        csv_result = clean_csv_output(raw_text)
         formatted_reply = f"```csv\n{csv_result}\n```" if request.path == '/chat' else csv_result
 
         return jsonify({
             'status': 'success',
-            'image_count': len(images),
+            'image_count': len(b64_images),
             'csv': csv_result,
             'reply': formatted_reply,
             'response': formatted_reply
