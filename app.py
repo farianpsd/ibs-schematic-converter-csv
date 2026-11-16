@@ -122,7 +122,11 @@ def chat():
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b64}} for b64 in b64_images]
         parts.append({"text": prompt_text})
 
-        candidate_models = ['gemini-3.8-flash']
+        candidate_models = [
+            'gemini-3.8-flash',
+            'gemini-3.8-flash-lite',
+            'gemini-3.8-pro'
+        ]
         raw_text = None
         last_error = None
 
