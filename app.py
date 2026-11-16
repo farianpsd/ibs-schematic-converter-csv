@@ -46,9 +46,9 @@ Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=70)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -132,11 +132,14 @@ def chat():
             payload = {
                 "contents": [{"parts": parts}],
                 "generationConfig": {
-                    "temperature": 0.1
+                    "temperature": 0.1,
+                    "thinkingConfig": {
+                        "thinkingLevel": "MINIMAL"
+                    }
                 }
             }
             try:
-                resp = requests.post(url, json=payload, timeout=60)
+                resp = requests.post(url, json=payload, timeout=100)
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
