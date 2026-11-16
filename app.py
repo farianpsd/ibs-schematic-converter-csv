@@ -83,7 +83,7 @@ def get_available_gemini_models():
         "robotics", "computer-use", "image", "2.0", "2.5"
     ]
     try:
-        resp = requests.get(list_url, timeout=15)
+        resp = requests.get(list_url, timeout=10)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -116,9 +116,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+    img.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def parse_uploaded_images(req):
@@ -210,8 +210,12 @@ def chat():
         candidate_models = get_available_gemini_models()
         raw_text = None
         last_error = None
+        start_time = time.time()
 
         for model_name in candidate_models:
+            if time.time() - start_time > 75:
+                break
+
             base_host = "generativelanguage.googleapis.com"
             url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
@@ -219,7 +223,7 @@ def chat():
                 "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "thinkingConfig": {"thinkingLevel": "HIGH"}
+                    "thinkingConfig": {"thinkingLevel": "LOW"}
                 }
             }
             payload_basic = {
@@ -229,9 +233,9 @@ def chat():
 
             current_payload = payload_with_thinking if "3." in model_name else payload_basic
 
-            for attempt in range(4):
+            for attempt in range(2):
                 try:
-                    resp = requests.post(url, json=current_payload, timeout=110)
+                    resp = requests.post(url, json=current_payload, timeout=55)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -245,7 +249,7 @@ def chat():
                         break
                     elif resp.status_code == 503:
                         last_error = f"HTTP 503 ({model_name}): Server sibuk, mencoba ulang..."
-                        time.sleep(2 * (attempt + 1))
+                        time.sleep(2)
                         continue
                     else:
                         last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:300]}"
