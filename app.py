@@ -10,11 +10,6 @@ import requests
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
 
-try:
-    import fitz  # PyMuPDF untuk membaca file PDF
-except ImportError:
-    fitz = None
-
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -115,7 +110,7 @@ def get_available_gemini_models():
         "robotics", "computer-use", "image", "2.0", "2.5", "lite"
     ]
     try:
-        resp = requests.get(list_url, timeout=15)
+        resp = requests.get(list_url, timeout=10)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -137,7 +132,7 @@ def get_available_gemini_models():
 
             valid_names.sort(key=model_priority)
             if valid_names:
-                CACHED_MODELS = valid_names
+                CACHED_MODELS = valid_names[:2]
                 return CACHED_MODELS
     except Exception:
         pass
@@ -146,28 +141,11 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # Resolusi penuh 2400px + quality 92 agar garis splitter & angka kecil sangat jelas
-    img.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+    # 2050px + quality 88: tajam untuk garis splitter & cepat diproses di bawah batas gateway
+    img.thumbnail((2050, 2050), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=92)
+    img.save(buf, format="JPEG", quality=88)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-def pdf_bytes_to_b64_images(pdf_bytes):
-    if fitz is None:
-        raise RuntimeError(
-            "Pustaka 'pymupdf' belum terpasang di server. "
-            "Jalankan 'pip install --user pymupdf' di Bash console PythonAnywhere."
-        )
-    images_b64 = []
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        for page in doc:
-            pix = page.get_pixmap(dpi=220, alpha=False)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images_b64.append(encode_image_jpeg_b64(img))
-    finally:
-        doc.close()
-    return images_b64
 
 def parse_uploaded_images(req):
     b64_images = []
@@ -178,13 +156,7 @@ def parse_uploaded_images(req):
             if single and single.filename != '':
                 uploaded_files = [single]
         for f in uploaded_files:
-            if not f or f.filename == '':
-                continue
-            fname = f.filename.lower()
-            mimetype = (f.mimetype or '').lower()
-            if fname.endswith('.pdf') or mimetype == 'application/pdf':
-                b64_images.extend(pdf_bytes_to_b64_images(f.read()))
-            else:
+            if f and f.filename != '':
                 img = Image.open(f.stream)
                 b64_images.append(encode_image_jpeg_b64(img))
     elif req.is_json:
@@ -195,15 +167,11 @@ def parse_uploaded_images(req):
         for b64_str in b64_list:
             if not b64_str:
                 continue
-            is_pdf_header = "application/pdf" in b64_str[:50].lower()
             if "," in b64_str:
                 b64_str = b64_str.split(",", 1)[1]
-            raw_bytes = base64.b64decode(b64_str)
-            if is_pdf_header or raw_bytes[:4] == b"%PDF":
-                b64_images.extend(pdf_bytes_to_b64_images(raw_bytes))
-            else:
-                img = Image.open(io.BytesIO(raw_bytes))
-                b64_images.append(encode_image_jpeg_b64(img))
+            img_bytes = base64.b64decode(b64_str)
+            img = Image.open(io.BytesIO(img_bytes))
+            b64_images.append(encode_image_jpeg_b64(img))
     return b64_images
 
 def parse_json_payload(raw_text):
@@ -258,13 +226,15 @@ def calculate_rf_csv_from_antennas(items):
 
     return "\n".join(rows)
 
-def call_gemini_high_precision(parts, step_label):
+def call_gemini_step_safe(parts, step_label):
     candidate_models = get_available_gemini_models()
     last_error = None
-    start_ts = time.time()
+    step_start = time.time()
 
     for model_name in candidate_models:
-        if time.time() - start_ts > 78:
+        elapsed = time.time() - step_start
+        # Jaga total waktu 1 panggilan polling tidak pernah melewati 75 detik agar bebas HTTP 502 PythonAnywhere
+        if elapsed > 50:
             break
 
         base_host = "generativelanguage.googleapis.com"
@@ -275,7 +245,7 @@ def call_gemini_high_precision(parts, step_label):
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": "HIGH"}
+                "thinkingConfig": {"thinkingLevel": "MEDIUM"}
             }
         }
         payload_basic = {
@@ -287,28 +257,23 @@ def call_gemini_high_precision(parts, step_label):
         }
 
         current_payload = payload_with_thinking if "3." in model_name else payload_basic
-        rem = max(25, int(85 - (time.time() - start_ts)))
+        req_timeout = min(42, max(20, int(72 - elapsed)))
 
         try:
-            resp = requests.post(url, json=current_payload, timeout=rem)
+            resp = requests.post(url, json=current_payload, timeout=req_timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                 if raw_text:
                     return parse_json_payload(raw_text)
             elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                rem2 = max(20, int(85 - (time.time() - start_ts)))
-                resp2 = requests.post(url, json=payload_basic, timeout=rem2)
+                resp2 = requests.post(url, json=payload_basic, timeout=req_timeout)
                 if resp2.status_code == 200:
                     raw_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"]
                     if raw_text:
                         return parse_json_payload(raw_text)
-            elif resp.status_code in (429, 503):
-                last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
-                time.sleep(1)
-                continue
             else:
-                last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+                last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:220]}"
         except Exception as err:
             last_error = f"{model_name}: {str(err)}"
 
@@ -343,7 +308,7 @@ def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": prompt_text}
     ]
-    return call_gemini_high_precision(parts, f"Ekstraksi Gambar {img_idx + 1}")
+    return call_gemini_step_safe(parts, f"Ekstraksi Gambar {img_idx + 1}")
 
 def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
     audit_prompt = (
@@ -362,7 +327,7 @@ def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": audit_prompt}
     ]
-    return call_gemini_high_precision(parts, f"Audit Gambar {img_idx + 1}")
+    return call_gemini_step_safe(parts, f"Audit Gambar {img_idx + 1}")
 
 @app.route('/')
 def index():
@@ -379,7 +344,7 @@ def chat():
         cleanup_old_jobs()
         b64_images = parse_uploaded_images(request)
         if not b64_images:
-            msg = 'Silakan unggah 1 atau lebih gambar / file PDF skematik IBS terlebih dahulu.'
+            msg = 'Silakan unggah 1 atau lebih gambar skematik IBS terlebih dahulu.'
             return jsonify({'status': 'error', 'response': msg, 'message': msg}), 400
 
         user_message = (
@@ -400,12 +365,12 @@ def chat():
             "status": "processing",
             "total_images": len(b64_images),
             "current_index": 0,
-            "sub_phase": "extract",  # 'extract' -> 'audit' per gambar
+            "sub_phase": "extract",
             "draft_payload": None,
             "user_message": user_message,
             "antennas": [],
             "risers": [],
-            "step": f"Gambar tersimpan (resolusi penuh). Tahap 1: Ekstraksi topologi gambar 1/{len(b64_images)}..."
+            "step": f"Gambar tersimpan. Tahap 1: Ekstraksi topologi gambar 1/{len(b64_images)}..."
         }
         save_job_state(job_id, state)
 
