@@ -11,7 +11,7 @@ from flask import Flask, render_template, request, jsonify
 from PIL import Image
 
 try:
-    import fitz  # PyMuPDF untuk membaca file PDF multi-halaman
+    import fitz  # PyMuPDF untuk membaca file PDF
 except ImportError:
     fitz = None
 
@@ -115,7 +115,7 @@ def get_available_gemini_models():
         "robotics", "computer-use", "image", "2.0", "2.5", "lite"
     ]
     try:
-        resp = requests.get(list_url, timeout=10)
+        resp = requests.get(list_url, timeout=15)
         if resp.status_code == 200:
             models_data = resp.json().get("models", [])
             valid_names = []
@@ -137,7 +137,7 @@ def get_available_gemini_models():
 
             valid_names.sort(key=model_priority)
             if valid_names:
-                CACHED_MODELS = valid_names[:2]
+                CACHED_MODELS = valid_names
                 return CACHED_MODELS
     except Exception:
         pass
@@ -146,7 +146,8 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    img.thumbnail((2250, 2250), Image.Resampling.LANCZOS)
+    # Resolusi penuh 2400px + quality 92 agar garis splitter & angka kecil sangat jelas
+    img.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -155,13 +156,12 @@ def pdf_bytes_to_b64_images(pdf_bytes):
     if fitz is None:
         raise RuntimeError(
             "Pustaka 'pymupdf' belum terpasang di server. "
-            "Jalankan 'pip install pymupdf' di Bash console PythonAnywhere."
+            "Jalankan 'pip install --user pymupdf' di Bash console PythonAnywhere."
         )
     images_b64 = []
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         for page in doc:
-            # Render 220 DPI agar angka kabel & garis cabang splitter pada PDF vektor tetap sangat tajam
             pix = page.get_pixmap(dpi=220, alpha=False)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             images_b64.append(encode_image_jpeg_b64(img))
@@ -258,24 +258,18 @@ def calculate_rf_csv_from_antennas(items):
 
     return "\n".join(rows)
 
-def call_gemini_step_safe(parts, step_label):
+def call_gemini_high_precision(parts, step_label):
     candidate_models = get_available_gemini_models()
     last_error = None
-    step_start = time.time()
 
     for model_name in candidate_models:
-        elapsed = time.time() - step_start
-        # Jaga total waktu 1 panggilan polling tidak pernah melewati 75 detik agar bebas HTTP 502 PythonAnywhere
-        if elapsed > 50:
-            break
-
         base_host = "generativelanguage.googleapis.com"
         url = f"https://{base_host}/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
         payload_with_thinking = {
             "contents": [{"parts": parts}],
             "generationConfig": {
-                "temperature": 0.05,
+                "temperature": 0.1,
                 "responseMimeType": "application/json",
                 "thinkingConfig": {"thinkingLevel": "HIGH"}
             }
@@ -289,25 +283,28 @@ def call_gemini_step_safe(parts, step_label):
         }
 
         current_payload = payload_with_thinking if "3." in model_name else payload_basic
-        req_timeout = 90
 
-        try:
-            resp = requests.post(url, json=current_payload, timeout=req_timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                if raw_text:
-                    return parse_json_payload(raw_text)
-            elif resp.status_code == 400 and "thinking" in resp.text.lower():
-                resp2 = requests.post(url, json=payload_basic, timeout=req_timeout)
-                if resp2.status_code == 200:
-                    raw_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"]
+        for attempt in range(2):
+            try:
+                resp = requests.post(url, json=current_payload, timeout=75)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                     if raw_text:
                         return parse_json_payload(raw_text)
-            else:
-                last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:220]}"
-        except Exception as err:
-            last_error = f"{model_name}: {str(err)}"
+                elif resp.status_code == 400 and "thinking" in resp.text.lower():
+                    current_payload = payload_basic
+                    continue
+                elif resp.status_code in (429, 503):
+                    last_error = f"HTTP {resp.status_code} ({model_name}): Server sibuk"
+                    time.sleep(3)
+                    continue
+                else:
+                    last_error = f"HTTP {resp.status_code} ({model_name}): {resp.text[:250]}"
+                    break
+            except Exception as err:
+                last_error = f"{model_name}: {str(err)}"
+                break
 
     raise Exception(f"Gagal pada {step_label}: {last_error}")
 
@@ -315,7 +312,7 @@ def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message
     if img_idx == 0:
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Ini adalah HALAMAN/GAMBAR KE-1 dari total {total_images} skematik IBS.\n"
+            f"Ini adalah GAMBAR KE-1 dari total {total_images} gambar skematik IBS.\n"
             "Keluarkan JSON object dengan struktur:\n"
             '{"antennas":[{"a":"<kode_antena>","f":"<LANTAI_X>","t":"<tipe_antena>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}],'
             '"risers":[{"target":"<label_tujuan_riser>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}]}\n'
@@ -326,7 +323,7 @@ def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message
         riser_json_str = json.dumps(riser_context)
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Ini adalah HALAMAN/GAMBAR KE-{img_idx + 1} dari total {total_images} skematik IBS.\n"
+            f"Ini adalah GAMBAR KE-{img_idx + 1} dari total {total_images} gambar skematik IBS.\n"
             f"REFERENSI RISER DARI GAMBAR SEBELUMNYA: {riser_json_str}\n\n"
             "Keluarkan JSON object dengan struktur:\n"
             '{"antennas":[{"a":"<kode_antena>","f":"<LANTAI_X>","t":"<tipe_antena>","c":[["<ukuran>",<meter>]],"d":["<kode_perangkat>"]}],"risers":[]}\n'
@@ -340,12 +337,12 @@ def run_extract_pass(b64_img, img_idx, total_images, riser_context, user_message
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": prompt_text}
     ]
-    return call_gemini_step_safe(parts, f"Ekstraksi Halaman {img_idx + 1}")
+    return call_gemini_high_precision(parts, f"Ekstraksi Gambar {img_idx + 1}")
 
 def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
     audit_prompt = (
         f"{SYSTEM_INSTRUCTION}\n\n"
-        f"TUGAS AUDIT AKURASI TINGGI (HALAMAN/GAMBAR KE-{img_idx + 1}):\n"
+        f"TUGAS AUDIT AKURASI TINGGI (GAMBAR KE-{img_idx + 1}):\n"
         "Berikut adalah hasil ekstraksi awal (DRAFT JSON) untuk gambar ini:\n"
         f"{json.dumps(draft_payload)}\n\n"
         f"Referensi Riser lintas gambar (jika ada): {json.dumps(riser_context)}\n\n"
@@ -359,7 +356,7 @@ def run_audit_pass(b64_img, img_idx, draft_payload, riser_context):
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
         {"text": audit_prompt}
     ]
-    return call_gemini_step_safe(parts, f"Audit Halaman {img_idx + 1}")
+    return call_gemini_high_precision(parts, f"Audit Gambar {img_idx + 1}")
 
 @app.route('/')
 def index():
@@ -397,12 +394,12 @@ def chat():
             "status": "processing",
             "total_images": len(b64_images),
             "current_index": 0,
-            "sub_phase": "extract",
+            "sub_phase": "extract",  # 'extract' -> 'audit' per gambar
             "draft_payload": None,
             "user_message": user_message,
             "antennas": [],
             "risers": [],
-            "step": f"Dokumen tersimpan ({len(b64_images)} halaman). Tahap 1: Ekstraksi topologi 1/{len(b64_images)}..."
+            "step": f"Gambar tersimpan (resolusi penuh). Tahap 1: Ekstraksi topologi gambar 1/{len(b64_images)}..."
         }
         save_job_state(job_id, state)
 
@@ -459,7 +456,7 @@ def job_status(job_id):
             )
             state["draft_payload"] = draft
             state["sub_phase"] = "audit"
-            state["step"] = f"Ekstraksi halaman {idx + 1}/{total} selesai. Mengaudit cabang splitter & panjang kabel..."
+            state["step"] = f"Ekstraksi gambar {idx + 1}/{total} selesai. Mengaudit cabang splitter & panjang kabel..."
             save_job_state(job_id, state)
             return jsonify({
                 'status': 'processing',
@@ -468,4 +465,53 @@ def job_status(job_id):
 
         else:
             verified = run_audit_pass(
-                b64_img=b64_img
+                b64_img=b64_img,
+                img_idx=idx,
+                draft_payload=state.get("draft_payload") or {},
+                riser_context=state.get("risers", [])
+            )
+
+            state["antennas"].extend(verified.get("antennas", []))
+            if verified.get("risers"):
+                state["risers"].extend(verified.get("risers", []))
+
+            state["current_index"] = idx + 1
+            state["sub_phase"] = "extract"
+            state["draft_payload"] = None
+
+            if state["current_index"] >= total:
+                if not state["antennas"]:
+                    raise Exception("Tidak ada titik antena indoor yang terbaca dari gambar.")
+                csv_result = calculate_rf_csv_from_antennas(state["antennas"])
+                state["status"] = "done"
+                state["csv"] = csv_result
+                save_job_state(job_id, state)
+
+                return jsonify({
+                    'status': 'success',
+                    'image_count': total,
+                    'csv': csv_result,
+                    'reply': csv_result,
+                    'response': csv_result
+                })
+            else:
+                state["step"] = f"Audit gambar {idx + 1}/{total} selesai. Mengekstrak gambar {idx + 2}/{total}..."
+                save_job_state(job_id, state)
+                return jsonify({
+                    'status': 'processing',
+                    'step': state["step"]
+                })
+
+    except Exception as e:
+        err_msg = f"Error: {str(e)}"
+        state["status"] = "error"
+        state["message"] = err_msg
+        save_job_state(job_id, state)
+        return jsonify({
+            'status': 'error',
+            'message': err_msg,
+            'response': err_msg
+        })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
