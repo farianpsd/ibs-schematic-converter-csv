@@ -146,10 +146,9 @@ def get_available_gemini_models():
 
 def encode_image_jpeg_b64(img):
     img = img.convert("RGB")
-    # 2050px + quality 88: tajam untuk garis splitter & cepat diproses di bawah batas gateway
-    img.thumbnail((2050, 2050), Image.Resampling.LANCZOS)
+    img.thumbnail((2250, 2250), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
+    img.save(buf, format="JPEG", quality=92)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def pdf_bytes_to_b64_images(pdf_bytes):
@@ -276,9 +275,9 @@ def call_gemini_step_safe(parts, step_label):
         payload_with_thinking = {
             "contents": [{"parts": parts}],
             "generationConfig": {
-                "temperature": 0.1,
+                "temperature": 0.05,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": "MEDIUM"}
+                "thinkingConfig": {"thinkingLevel": "HIGH"}
             }
         }
         payload_basic = {
