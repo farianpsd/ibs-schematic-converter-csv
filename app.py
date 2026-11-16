@@ -2,15 +2,15 @@ import os
 import json
 import base64
 from flask import Flask, render_template, request, jsonify
-import google.generativeai as genai
+from google import genai
 from PIL import Image
 import io
 
 app = Flask(__name__)
 
-# Ganti dengan API Key Gemini dari Google AI Studio kamu
+# API Key Gemini kamu dari Google AI Studio (format AQ.Ab8... didukung penuh di SDK ini)
 GEMINI_API_KEY = "AQ.Ab8RN6KlpCqouj_YOps1SA1hle7geYY7Ja9hq_ECTw_CnIaDhg"
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 @app.route('/')
 def index():
@@ -80,9 +80,11 @@ def chat():
         # Gabungkan prompt dan semua gambar ke dalam list contents
         contents = [prompt] + image_list
 
-        # Panggil Gemini Vision API
-        model = genai.GenerativeModel('gemini-2.5-pro')
-        response = model.generate_content(contents)
+        # Panggil Gemini Vision API menggunakan SDK baru (google-genai)
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=contents
+        )
         
         # Bersihkan format teks JSON
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
