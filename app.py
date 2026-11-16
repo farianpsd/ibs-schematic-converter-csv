@@ -41,7 +41,8 @@ TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOS
         FEEDER_LOSS_DB = round(Total_Feeder_Loss_Teoritis * 1.12, 2)
 
    B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati dari output MCM hingga antena tersebut):
-      - Hitung jumlah cabang output pada simbol tiap splitter (JANGAN menyamaratakan semua antena jika jumlah cabangnya berbeda!):
+      - KONSISTENSI MCM: JANGAN masukkan loss MCM (3.5 dB) ke dalam SPLITTER_LOSS_DB (mulai hitung splitter dari splitter pertama setelah port output MCM secara konsisten untuk seluruh lantai).
+      - PENGHITUNGAN PORT SPLITTER DINAMIS: Tentukan jenis splitter dengan menghitung TOTAL seluruh jalur kabel yang keluar dari sisi output komponen tersebut (baik yang mengarah horizontal ke antena/cabang maupun yang turun/naik vertikal sebagai kabel riser sejajar). Jangan mengabaikan garis riser yang digambar berdekatan/sejajar, dan jangan menyamaratakan nilai antar-antena jika jumlah cabang outputnya berbeda:
         * G-Wave Power Splitter 2-Way = 3.5 dB
         * G-Wave Power Splitter 3-Way = 5.5 dB
         * G-Wave Power Splitter 4-Way = 6.5 dB
