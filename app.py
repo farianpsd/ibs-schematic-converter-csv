@@ -134,7 +134,7 @@ def chat():
                 "generationConfig": {
                     "temperature": 0.1,
                     "thinkingConfig": {
-                        "thinkingLevel": "MINIMAL"
+                        "thinkingLevel": "LOW"
                     }
                 }
             }
