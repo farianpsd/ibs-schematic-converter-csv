@@ -29,13 +29,12 @@
         .preview-item .remove-single { position: absolute; top: -6px; right: -6px; background: #dc3545; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-weight: bold; }
         .clear-all-btn { color: #dc3545; cursor: pointer; font-size: 0.85rem; font-weight: bold; white-space: nowrap; margin-left: 10px; }
 
-        .input-row { display: flex; gap: 10px; }
-        .input-row input[type="text"] { flex: 1; padding: 12px 15px; border: 1px solid #ced4da; border-radius: 8px; outline: none; }
-        .input-row input[type="text"]:focus { border-color: #0d6efd; }
-        .btn { padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: 0.2s; white-space: nowrap; }
-        .btn-primary { background: #0d6efd; color: white; }
+        .input-row { display: flex; gap: 10px; justify-content: space-between; align-items: center; }
+        .btn { padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.95rem; transition: 0.2s; white-space: nowrap; }
+        .btn-primary { background: #0d6efd; color: white; flex: 1; }
         .btn-primary:hover { background: #0b5ed7; }
-        .btn-secondary { background: #6c757d; color: white; }
+        .btn-primary:disabled { background: #8bb9fe; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; flex: 1; }
         .btn-secondary:hover { background: #5c636a; }
         .btn-success { background: #198754; color: white; margin-top: 12px; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-size: 0.9rem; font-weight: 600; width: fit-content; cursor: pointer; border: none; }
         .btn-success:hover { background: #157347; }
@@ -47,12 +46,12 @@
 <div class="chat-container">
     <div class="chat-header">
         <h2>IBS Link Budget AI Extractor</h2>
-        <span style="font-size: 0.8rem; opacity: 0.85;">Multi-Schematic Mode • Gemini 3.8 Flash</span>
+        <span style="font-size: 0.8rem; opacity: 0.85;">Multi-Schematic Mode • High Precision</span>
     </div>
 
     <div class="chat-box" id="chatBox">
         <div class="message bot">
-            Halo! Silakan <b>Paste (Ctrl+V)</b> berkali-kali atau <b>Pilih Beberapa Gambar</b> skematik IBS yang terhubung dalam satu sistem Repeater ke kolom input di bawah ini.
+            Halo! Silakan klik <b>Pilih Gambar</b> untuk memilih 1 atau beberapa gambar skematik IBS yang terhubung dalam satu sistem Repeater, lalu klik <b>Proses</b>.
         </div>
     </div>
 
@@ -63,32 +62,14 @@
         </div>
         <div class="input-row">
             <input type="file" id="fileInput" accept="image/*" multiple style="display: none;" onchange="handleFileSelect(event)">
-            <button class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">📁 Pilih Gambar</button>
-            <input type="text" id="userInput" placeholder="Tempel gambar (Ctrl+V) atau ketik catatan..." onpaste="handlePaste(event)" onkeypress="if(event.key==='Enter') sendMessage()">
-            <button class="btn btn-primary" onclick="sendMessage()">Kirim</button>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">📁 Pilih Gambar</button>
+            <button type="button" id="processBtn" class="btn btn-primary" onclick="sendMessage()">Proses</button>
         </div>
     </div>
 </div>
 
 <script>
     let selectedFiles = [];
-
-    function handlePaste(e) {
-        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-        let hasImage = false;
-        for (let item of items) {
-            if (item.type.indexOf('image') !== -1) {
-                const file = item.getAsFile();
-                if (file) {
-                    selectedFiles.push(file);
-                    hasImage = true;
-                }
-            }
-        }
-        if (hasImage) {
-            renderPreviews();
-        }
-    }
 
     function handleFileSelect(e) {
         const files = Array.from(e.target.files);
@@ -116,7 +97,7 @@
                 const itemDiv = document.createElement('div');
                 itemDiv.className = 'preview-item';
                 itemDiv.innerHTML = `
-                    <img src="${event.target.result}" title="${file.name || 'Pasted Image ' + (index + 1)}">
+                    <img src="${event.target.result}" title="${file.name || 'Gambar ' + (index + 1)}">
                     <span class="remove-single" onclick="removeSingleImage(${index})" title="Hapus gambar ini">✕</span>
                 `;
                 previewList.appendChild(itemDiv);
@@ -149,39 +130,55 @@
         URL.revokeObjectURL(url);
     }
 
-    async function sendMessage() {
-        const input = document.getElementById('userInput');
-        const text = input.value.trim();
+    async function pollJobUntilDone(jobId, statusElement, chatBox) {
+        while (true) {
+            const res = await fetch(`/api/job/${jobId}`);
+            const contentType = res.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('Server mengembalikan respons non-JSON saat mengecek progres.');
+            }
+            const data = await res.json();
 
-        if (!text && selectedFiles.length === 0) return;
+            if (data.status === 'processing') {
+                if (statusElement && data.step) {
+                    statusElement.innerText = `⏳ ${data.step}`;
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                continue;
+            }
+            return data;
+        }
+    }
+
+    async function sendMessage() {
+        if (selectedFiles.length === 0) {
+            alert('Silakan pilih minimal 1 gambar skematik IBS terlebih dahulu.');
+            return;
+        }
 
         const chatBox = document.getElementById('chatBox');
+        const processBtn = document.getElementById('processBtn');
+        processBtn.disabled = true;
+        processBtn.innerText = 'Memproses...';
 
-        // 1. Tampilkan Pesan & Semua Gambar User di Chat
+        // 1. Tampilkan Semua Gambar User di Chat
         const userMsgDiv = document.createElement('div');
         userMsgDiv.className = 'message user';
 
-        if (selectedFiles.length > 0) {
-            const imgGrid = document.createElement('div');
-            imgGrid.className = 'user-img-grid';
-            selectedFiles.forEach(file => {
-                const img = document.createElement('img');
-                img.src = URL.createObjectURL(file);
-                img.className = 'img-preview-msg';
-                imgGrid.appendChild(img);
-            });
-            userMsgDiv.appendChild(imgGrid);
-        }
+        const imgGrid = document.createElement('div');
+        imgGrid.className = 'user-img-grid';
+        selectedFiles.forEach(file => {
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.className = 'img-preview-msg';
+            imgGrid.appendChild(img);
+        });
+        userMsgDiv.appendChild(imgGrid);
 
-        if (text) {
-            const txtSpan = document.createElement('span');
-            txtSpan.innerText = text;
-            userMsgDiv.appendChild(txtSpan);
-        } else if (selectedFiles.length > 0) {
-            const txtSpan = document.createElement('span');
-            txtSpan.innerText = `Mengekstrak ${selectedFiles.length} gambar skematik...`;
-            userMsgDiv.appendChild(txtSpan);
-        }
+        const txtSpan = document.createElement('span');
+        txtSpan.innerText = `Memproses ${selectedFiles.length} gambar skematik...`;
+        userMsgDiv.appendChild(txtSpan);
         chatBox.appendChild(userMsgDiv);
 
         // 2. Siapkan FormData untuk dikirim ke /chat di app.py
@@ -189,17 +186,16 @@
         selectedFiles.forEach(file => {
             formData.append('files', file);
         });
-        formData.append('message', text);
+        formData.append('message', '');
 
-        // Reset Input Bar
-        input.value = '';
+        // Reset Preview Bar
         clearAllImages();
         chatBox.scrollTop = chatBox.scrollHeight;
 
         // 3. Loading Indicator Bot
         const botLoadingDiv = document.createElement('div');
         botLoadingDiv.className = 'message bot';
-        botLoadingDiv.innerText = 'Sedang melacak jalur & menghitung loss dari semua skematik... (Mohon tunggu ±15-30 detik)';
+        botLoadingDiv.innerText = '⏳ Mengunggah skematik & menyiapkan analisis presisi tinggi...';
         chatBox.appendChild(botLoadingDiv);
         chatBox.scrollTop = chatBox.scrollHeight;
 
@@ -208,7 +204,18 @@
                 method: 'POST',
                 body: formData
             });
-            const result = await response.json();
+
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('Respons server tidak valid (bukan JSON). Pastikan app.py sudah di-reload.');
+            }
+
+            let result = await response.json();
+
+            // Jika server mengembalikan job_id (mode bertahap anti-timeout), lanjutkan polling
+            if (result.status === 'processing' && result.job_id) {
+                result = await pollJobUntilDone(result.job_id, botLoadingDiv, chatBox);
+            }
 
             if (result.status === 'success' && result.csv) {
                 const csvData = result.csv.trim();
@@ -216,11 +223,12 @@
                 const rowCount = Math.max(0, lines.length - 1);
 
                 botLoadingDiv.innerHTML = `
-                    <b>✅ Berhasil mengekstrak ${rowCount} segmen jalur dari${result.image_count || 1} skematik menjadi 1 file CSV:</b>
+                    <b>✅ Berhasil mengekstrak ${rowCount} titik antena dari ${result.image_count || 1} skematik menjadi 1 file CSV:</b>
                     <pre>${escapeHtml(csvData)}</pre>
                 `;
 
                 const downloadBtn = document.createElement('button');
+                downloadBtn.type = 'button';
                 downloadBtn.className = 'btn-success';
                 downloadBtn.innerHTML = `📥 Download CSV Gabungan (${rowCount} Baris)`;
                 downloadBtn.onclick = () => downloadCSVFile(csvData, 'ibs_combined_link_budget.csv');
@@ -231,9 +239,12 @@
                 botLoadingDiv.innerHTML = `<span style="color:#dc3545; font-weight:600;">❌ ${escapeHtml(errText)}</span>`;
             }
         } catch (err) {
-            botLoadingDiv.innerHTML = `<span style="color:#dc3545; font-weight:600;">❌ Terjadi kesalahan koneksi atau timeout server: ${escapeHtml(err.message)}</span>`;
+            botLoadingDiv.innerHTML = `<span style="color:#dc3545; font-weight:600;">❌ Terjadi kesalahan: ${escapeHtml(err.message)}</span>`;
+        } finally {
+            processBtn.disabled = false;
+            processBtn.innerText = 'Proses';
+            chatBox.scrollTop = chatBox.scrollHeight;
         }
-        chatBox.scrollTop = chatBox.scrollHeight;
     }
 
     function escapeHtml(text) {
