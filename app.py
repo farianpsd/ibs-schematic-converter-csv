@@ -13,40 +13,52 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 CACHED_MODELS = []
 
 SYSTEM_INSTRUCTION = """
-Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh topologi skematik multi-lantai menjadi 1 tabel CSV Link Budget yang presisi.
+Kamu adalah Senior RF Engineer IBS (In-Building System) yang bertugas mengekstrak seluruh titik antena indoor dari skematik multi-lantai menjadi 1 tabel CSV Link Budget per titik antena berdasarkan spesifikasi perangkat pasif RF merek G-WAVE.
 
 ATURAN KELUARAN (STRICT CSV):
 1. WAJIB HANYA MENGELUARKAN TEKS CSV MURNI.
 2. DILARANG KERAS menggunakan simbol Markdown seperti bold (**), backtick (`), atau pagar (#) di mana pun.
 3. BARIS PERTAMA (HEADER) WAJIB EXACT SAMA SEPERTI INI:
-Floor,Source_Node,Source_Type,Target_Node,Target_Type,Component_Detail,Length_m,Unit_Loss_dB_per_m,Component_Loss_dB,Antenna_Gain_dBi,Net_Branch_Loss_dB
+TITIK_ANTENA,LANTAI_POSISI,TIPE_ANTENA,FEEDER_LOSS_DB,SPLITTER_LOSS_DB,TOTAL_LOSS_DB
 
-4. ATURAN PEMBACAAN MULTI-GAMBAR & KONTINUITAS JALUR:
-   - Gabungkan semua gambar yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung.
-   - Perhatikan label penghubung antar-gambar (contoh: kabel bertuliskan "TO LT 3" pada Lantai 4 terhubung langsung ke kabel "FROM LT 4" pada Lantai 3 dan Lantai 2).
-   - Untuk penamaan titik antena agar tidak bentrok antar-lantai, gunakan format: LT4-AO-1, LT3-AO-1, LT2-AO-1, dst.
-   - Ekstrak juga jalur dari Repeater (Telkomsel, Indosat, XL) menuju MCM/Combiner, maupun dari Antenna Donor menuju Repeater.
+4. ATURAN PEMFILTERAN & BARIS DATA (HANYA TITIK ANTENA INDOOR):
+   - HANYA keluarkan baris untuk titik Antena Indoor distribusi (seperti AO-1, AO-2, AP-1, dst.).
+   - DILARANG KERAS mengeluarkan baris untuk Repeater, MCM/Combiner, Splitter, Coupler, Kabel Jumper antar-lantai (TO LT / FROM LT), maupun Antenna Donor.
+   - Gabungkan semua gambar skematik yang dikirim menjadi SATU rangkaian sistem distribusi yang terhubung (telusuri jalur dari sumber/MCM melewati kabel riser "TO LT X" / "FROM LT Y" sampai ke setiap antena di masing-masing lantai).
+   - Kolom `TITIK_ANTENA`: tulis kode antena sesuai label gambar (misal: AO-1, AO-2, atau jika antar-lantai memiliki nomor sama tulis LT4-AO-1, LT3-AO-1 agar unik).
+   - Kolom `LANTAI_POSISI`: tulis posisi lantai dengan huruf kapital (contoh: LANTAI 4, LANTAI 3, LANTAI 2, LANTAI 1).
+   - Kolom `TIPE_ANTENA`: tulis jenis antena dengan rapi (contoh: Antenna Omni, Antenna Planar).
 
-5. STANDAR KALKULASI LOSS & GAIN RF (ANGKA DESIMAL SAJA TANPA SATUAN):
-   - FEEDER 1/2": Unit_Loss_dB_per_m = 0.07, Component_Loss_dB = round(Length_m * 0.07, 2)
-   - FEEDER 7/8": Unit_Loss_dB_per_m = 0.04, Component_Loss_dB = round(Length_m * 0.04, 2)
-   - FEEDER 1 1/4": Unit_Loss_dB_per_m = 0.03, Component_Loss_dB = round(Length_m * 0.03, 2)
-   - SPLITTER 2-WAY: Length_m = 0, Unit_Loss_dB_per_m = 0, Component_Loss_dB = 3.20
-   - SPLITTER 3-WAY: Length_m = 0, Unit_Loss_dB_per_m = 0, Component_Loss_dB = 5.00
-   - SPLITTER 4-WAY: Length_m = 0, Unit_Loss_dB_per_m = 0, Component_Loss_dB = 6.30
-   - COUPLER (6dB / 10dB sesuai label): Length_m = 0, Unit_Loss_dB_per_m = 0, Component_Loss_dB = nilai coupler
-   - MCM / COMBINER: Length_m = 0, Unit_Loss_dB_per_m = 0, Component_Loss_dB = 3.50
-   - JUMPER + CONNECTOR (jika terpasang): tambahkan 0.50 dB pada segmen terkait.
-   - ANTENNA GAIN (Antenna_Gain_dBi):
-     * Antenna Omni = 2.0
-     * Antenna Planar = 7.0
-     * Antenna Donor = 11.0
-     * Jika baris bukan merupakan koneksi akhir ke antena, isi Antenna_Gain_dBi = 0.
-   - Net_Branch_Loss_dB = round(Component_Loss_dB - Antenna_Gain_dBi, 2)
-   - SEMUA KOLOM ANGKA (Length_m, Unit_Loss_dB_per_m, Component_Loss_dB, Antenna_Gain_dBi, Net_Branch_Loss_dB) WAJIB BERUPA SATU ANGKA DESIMAL MATANG (contoh: 4.20), DILARANG KERAS menulis tanda tambah atau rumus seperti 3.5+0.7.
-   - SETIAP BARIS DATA WAJIB DIPISAH DENGAN ENTER (NEWLINE), DILARANG MENGGABUNGKAN DUA BARIS DALAM SATU BARIS.
+5. STANDAR KALKULASI LOSS PERANGKAT MEREK G-WAVE (END-TO-END PER ANTENA):
+   Telusuri seluruh jalur dari output sumber distribusi (Repeater / MCM) sampai ke masing-masing titik antena, lalu akumulasikan:
+   
+   A. `FEEDER_LOSS_DB` (Total akumulasi loss seluruh kabel feeder yang dilewati menuju antena tersebut):
+      - Feeder 1/2" = Panjang (m) * 0.07 dB/m
+      - Feeder 7/8" = Panjang (m) * 0.04 dB/m
+      - Feeder 1 1/4" = Panjang (m) * 0.03 dB/m
 
-6. DILARANG MENAMBAHKAN TEKS PENJELASAN APAPUN SEBELUM ATAU SESUDAH CSV.
+   B. `SPLITTER_LOSS_DB` (Total akumulasi loss seluruh perangkat pasif G-Wave yang dilewati di jalur tersebut):
+      - G-Wave Power Splitter 2-Way = 3.5 dB
+      - G-Wave Power Splitter 3-Way = 5.5 dB
+      - G-Wave Power Splitter 4-Way = 6.5 dB
+      - G-Wave Directional Coupler (perhatikan cabang port Coupled/Tap vs Through/Main pada gambar!):
+        * Coupler 5 dB  -> Port Coupled = 5.5 dB | Port Through = 1.8 dB
+        * Coupler 6 dB  -> Port Coupled = 6.5 dB | Port Through = 1.5 dB
+        * Coupler 7 dB  -> Port Coupled = 7.5 dB | Port Through = 1.2 dB
+        * Coupler 10 dB -> Port Coupled = 10.5 dB | Port Through = 0.7 dB
+        * Coupler 15 dB -> Port Coupled = 15.4 dB | Port Through = 0.4 dB
+        * Coupler 20 dB -> Port Coupled = 20.3 dB | Port Through = 0.3 dB
+        * Coupler 30 dB -> Port Coupled = 30.3 dB | Port Through = 0.2 dB
+      - G-Wave Hybrid Combiner / MCM (jika jalur melewati combiner sebelum distribusi) = 3.5 dB
+
+   C. `TOTAL_LOSS_DB`:
+      - TOTAL_LOSS_DB = round(FEEDER_LOSS_DB + SPLITTER_LOSS_DB + 0.5, 2)
+      - Angka 0.5 dB adalah fixed loss Jumper + Konektor RF per jalur antena. JANGAN dikurangi dengan Antenna Gain.
+
+6. ATURAN FORMAT ANGKA & BARIS:
+   - Semua nilai loss wajib berupa satu angka desimal matang (contoh: 3.5, 10.65, 14.85). DILARANG menulis rumus atau tanda tambah.
+   - Setiap titik antena wajib berada pada baris terpisah (dipisah Enter/newline).
+   - DILARANG menambahkan teks penjelasan apa pun sebelum atau sesudah CSV.
 """
 
 def get_available_gemini_models():
@@ -130,7 +142,7 @@ def clean_csv_output(raw_text):
     text = raw_text.strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    text = re.sub(r"\s+(?=(?:LT\d+|GF|B\d+|ROOF),)", "\n", text)
+    text = re.sub(r"\s+(?=(?:LT\d+-)?(?:AO|AP)-\d+,)", "\n", text)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return "\n".join(lines)
 
@@ -160,7 +172,7 @@ def chat():
         prompt_text = (
             f"{SYSTEM_INSTRUCTION}\n\n"
             f"Terdapat {len(b64_images)} gambar skematik IBS yang saling terhubung. "
-            f"Ekstrak seluruh jalur, panjang kabel, splitter, loss, dan gain antena dari semua gambar tersebut menjadi SATU tabel CSV utuh.\n"
+            f"Telusuri seluruh jalur distribusi dari sumber menuju setiap titik antena indoor di semua lantai dan hitung total akumulasi Feeder Loss, Splitter/Coupler Loss (standar G-Wave), serta Total Loss (termasuk +0.5 dB jumper/connector) ke dalam SATU tabel CSV utuh.\n"
             f"Catatan tambahan user: {user_message}"
         )
 
