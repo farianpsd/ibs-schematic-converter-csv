@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # API Key Gemini kamu dari Google AI Studio (format AQ.Ab8... didukung penuh di SDK ini)
 GEMINI_API_KEY = "AQ.Ab8RN6KlpCqouj_YOps1SA1hle7geYY7Ja9hq_ECTw_CnIaDhg"
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(vertexai=True, api_key=GEMINI_API_KEY)
 
 @app.route('/')
 def index():
